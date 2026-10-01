@@ -49,6 +49,10 @@ export const ROLE_CSS: Record<FnClass, string> = {
   outside: 'oklch(0.55 0.01 260)',
 };
 
+/** Reharm offers (possible, not predicted): one neutral violet, apart from every root hue. */
+export const OFFER_RGB = lin(0.78, 0.06, 300);
+export const OFFER_CSS = 'oklch(0.78 0.06 300)';
+
 /** Harmonic function from a roman numeral ("ii⁷", "V⁷/ii", "♭VIIΔ⁷"). */
 export function fnFromRoman(roman: string): Fn | null {
   if (!roman) return null;

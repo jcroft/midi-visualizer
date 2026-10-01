@@ -7,7 +7,7 @@
 import type { Scene } from 'three/webgpu';
 import type { Fn, Reread } from '@shared/analysis';
 import { chordTones, resolveVoice, voiceLeading, type FnClass, type VoicingReading } from '@theory/voicing';
-import { cssOklch } from './color';
+import { cssOklch, oklchToLinear } from './color';
 import type { Layout } from './layout';
 import type { SpriteBatch } from './sprites';
 import { TextLayer } from './text';
@@ -16,6 +16,13 @@ import { ROLE_RGB, fnRgb } from './taxonomy';
 
 /** At most this many voices (lowest first: the left hand) get a hidden-voice line. */
 const VOICE_CAP = 5;
+/** Tension samples kept for the curve (one per ~4 px of scroll). */
+const TENSION_CAP = 1024;
+const TENSION_STEP_PX = 4;
+const lin = (L: number, C: number, h: number) => oklchToLinear(L, C, h, new Float32Array(3));
+/** The tension ribbon runs from a cool, quiet grey-blue at rest to a hot coral at full pull. */
+const CALM = lin(0.6, 0.05, 240);
+const HOT = lin(0.74, 0.16, 30);
 
 interface Entry {
   name: string;
@@ -67,6 +74,13 @@ export class HistoryStrip {
   private bandLo = 48;
   private bandHi = 72;
   private voiceKey = '';
+  /** The Tension curve layer: a ribbon under everything, rising with harmonic tension. */
+  tensionOn = true;
+  private ribbonH = 0;
+  private readonly tenT = new Float64Array(TENSION_CAP);
+  private readonly tenV = new Float32Array(TENSION_CAP);
+  private tenHead = 0;
+  private tenCount = 0;
 
   constructor(
     private readonly scene: Scene,
@@ -85,7 +99,8 @@ export class HistoryStrip {
     this.W = Math.ceil(R * 1.0);
     // Clear of the button row (which fades out while playing), with room under it for the hidden voices.
     this.bandH = this.voicesOn ? Math.max(28, R * 0.16) : 0;
-    this.y = Math.max(this.H / 2 + 64, h * 0.045 + this.H / 2) + this.bandH;
+    this.ribbonH = this.tensionOn ? Math.max(14, R * 0.07) : 0;
+    this.y = Math.max(this.H / 2 + 64, h * 0.045 + this.H / 2) + this.bandH + this.ribbonH;
     for (const e of this.entries) {
       e.layer.place(0, this.y, this.W, this.H, dpr);
       e.w = this.nameWidth(e.name, e.roman);
@@ -169,6 +184,16 @@ export class HistoryStrip {
     cur.roles = vs.map((v) => v.cls);
   }
 
+  /** A tension sample (0..1), kept at most one per few px of scroll. */
+  pushTension(t: number, v: number): void {
+    const last = this.tenCount ? this.tenT[(this.tenHead + TENSION_CAP - 1) % TENSION_CAP] : -1e9;
+    if (t - last < TENSION_STEP_PX / (HISTORY_SPEED_R * this.L.R)) return;
+    this.tenT[this.tenHead] = t;
+    this.tenV[this.tenHead] = v;
+    this.tenHead = (this.tenHead + 1) % TENSION_CAP;
+    this.tenCount = Math.min(TENSION_CAP, this.tenCount + 1);
+  }
+
   /** Silence: the current chord ends. */
   end(t: number): void {
     const cur = this.entries[this.entries.length - 1];
@@ -234,6 +259,7 @@ export class HistoryStrip {
     }
 
     if (visible && voices && this.voicesOn) this.drawVoices(sp, t, gap, showFuture);
+    if (visible && this.tensionOn) this.drawTension(sp, t);
 
     // The future, right of now: outline names with dotted underlines.
     let fx = cx + gap;
@@ -337,6 +363,38 @@ export class HistoryStrip {
       }
     }
     void t;
+  }
+
+  /**
+   * The tension curve: a slim ribbon below the hidden voices, scrolling with the
+   * lead sheet. Its height and heat follow tension, so a chorus that stayed high
+   * and never came down is plain to see. Structure tier: tinted, no glow.
+   */
+  private drawTension(sp: SpriteBatch, t: number): void {
+    const { cx } = this.L;
+    if (!this.tenCount) return;
+    const v = HISTORY_SPEED_R * this.L.R;
+    const base = this.y - this.H / 2 - 4 - this.bandH - this.ribbonH;
+    const hh = this.ribbonH - 4;
+    const span = cx - 24;
+    // a hairline floor, so the ribbon reads as a gauge even at rest
+    sp.rect((24 + cx) / 2, base, span / 2, 0.5, 0.6, 0.64, 0.78, 0.18);
+    let xr = cx; // right edge of the newest sample: now
+    for (let i = 0; i < this.tenCount; i++) {
+      const j = (this.tenHead + TENSION_CAP - 1 - i) % TENSION_CAP;
+      const x = cx - (t - this.tenT[j]) * v;
+      if (x < 24) break;
+      // each sample spans to the newer one, so a slow frame leaves no gaps
+      const hw = Math.max(TENSION_STEP_PX / 2, (xr - x) / 2) + 0.3;
+      const mx = (x + xr) / 2;
+      xr = x;
+      const val = this.tenV[j];
+      if (val < 0.01) continue;
+      const fade = Math.pow(Math.max(0, 1 - (cx - x) / span), 0.8);
+      const r = CALM[0] + (HOT[0] - CALM[0]) * val, g = CALM[1] + (HOT[1] - CALM[1]) * val, b = CALM[2] + (HOT[2] - CALM[2]) * val;
+      const h = Math.max(1, val * hh);
+      sp.rect(mx, base + h / 2, hw, h / 2, r, g, b, (0.45 + 0.45 * val) * fade);
+    }
   }
 
   private nameWidth(name: string, roman: string): number {

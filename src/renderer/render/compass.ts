@@ -16,8 +16,11 @@ import type { Cell, SpriteBatch } from './sprites';
 import { TextLayer } from './text';
 import { HistoryStrip } from './history';
 import { Stack } from './stack';
-import { FN_RGB, ROLE_RGB, fnFromRoman } from './taxonomy';
-import { tendencies, type Tendency } from '@theory/voicing';
+import { FN_RGB, OFFER_CSS, OFFER_RGB, ROLE_RGB, fnFromRoman } from './taxonomy';
+import { chordTones, tendencies, type Tendency } from '@theory/voicing';
+import { readLineNote, scaleFor, type LineNote, type ScaleReading } from '@theory/scales';
+import { reharmsFor, type Reharm } from '@theory/reharm';
+import { tensionOf } from '@theory/tension';
 import {
   BADGE_FADE,
   BADGE_HOLD,
@@ -116,6 +119,19 @@ const TAIL_LAND = 0.9;
 /** Damper sweep on pedal lift, s. */
 const DAMPER_SWEEP = 0.28;
 
+/** Scale halo radius and thickness (× R): a band just inside the ring, outside the pitch names. */
+const HALO_R = 0.93;
+const HALO_THICK = 0.03;
+/** A right-hand note counts as a line note when no other key went down within this long (s). */
+const LINE_SETTLE = 0.04;
+/** How long a line note's mark stays, and an enclosure's bracket, s. */
+const LINE_FADE = 1.2;
+const ENC_FADE = 1.6;
+/** Reharm diamonds sit between the key arc and the prediction orbit (× R). */
+const OFFER_R = 1.22;
+/** Tension follows the analysis with this time constant, s. */
+const TENSION_TAU = 0.2;
+
 /** How a predicted chord's label hangs off its anchor point. */
 type Align = 'left' | 'right' | 'top' | 'bottom';
 
@@ -203,6 +219,30 @@ export class Compass {
   private tailKey = '';
   private landed: Tendency[] = [];
   private landT = -1e9;
+  // Scale halo: the chord-scale, faded in per pitch class, and the marks on it (0 none, 1 color tone, 2 alteration).
+  private scale: ScaleReading | null = null;
+  private scaleKey = '';
+  private scaleName = '';
+  private readonly haloW = new Float32Array(12);
+  // Line reading: right-hand single notes against the scale.
+  private line: LineNote[] = [];
+  private lineNote = -1;
+  private lineT = 0;
+  private lastOnT = -1e9;
+  private encPc = -1;
+  private encT = -1e9;
+  private readonly encLayer: TextLayer;
+  // Reharm offers: diamonds for what you could play instead.
+  private offers: Reharm[] = [];
+  private offerKey = '';
+  private offerSig = '';
+  private offerT = -1e9;
+  private readonly offerLayers: TextLayer[] = [];
+  private readonly offerLabels: (PredLabel | null)[] = [null, null, null];
+  private readonly offerLabelKeys = ['', '', ''];
+  private readonly offerWhy = ['', '', ''];
+  // Tension, smoothed, for the curve under the lead sheet.
+  private tension = 0;
   // Damper sweep on pedal lift.
   private wasPedal = false;
   private damperT = -1e9;
@@ -274,6 +314,10 @@ export class Compass {
       inRise: LABEL_RISE_PX,
       delay: 0.05,
     });
+    this.encLayer = new TextLayer(scene, 60, (ctx, w, h) => this.drawEnc(ctx, w, h), { out: 0.4, outRise: 0, in: 0.12, inRise: LABEL_RISE_PX, delay: 0 });
+    for (let i = 0; i < 3; i++) {
+      this.offerLayers.push(new TextLayer(scene, 45, (ctx, w, h) => this.drawOffer(ctx, w, h, i), { ...predFade, delay: PRED_DELAY + 0.3 }));
+    }
     this.history = new HistoryStrip(scene, L);
     this.stack = new Stack(scene, L);
     this.chordLayer.changed(); // shows "play a chord"
@@ -303,12 +347,15 @@ export class Compass {
 
   setLayers(layers: Layers): void {
     const stackChanged = layers.stack !== this.layers.stack;
-    const voicesChanged = layers.voices !== this.layers.voices;
+    const voicesChanged = layers.voices !== this.layers.voices || layers.tensionCurve !== this.layers.tensionCurve;
+    const scaleChanged = layers.scale !== this.layers.scale;
     this.layers = { ...layers };
     if (voicesChanged) {
       this.history.voicesOn = layers.voices;
+      this.history.tensionOn = layers.tensionCurve;
       this.history.layout();
     }
+    if (scaleChanged) this.chordLayer.changed();
     if (stackChanged) this.chordLayer.place(this.L.cx, this.L.cy - this.L.R * this.chordDrop(), this.L.R * 2.0, this.L.R * 1.3, this.L.dpr);
     this.layoutPreds(true);
   }
@@ -329,6 +376,9 @@ export class Compass {
     for (const l of this.predLayers) l.place(cx, cy, R * PRED_W, R * PRED_H, dpr);
     this.thenLayer.place(cx, cy, R * PRED_W, R * PRED_H, dpr);
     this.badgeLayer.place(cx, cy - R * 0.74, R * 1.6, Math.max(18, R * 0.12), dpr);
+    this.encLayer.place(cx, cy, R * 0.6, Math.max(16, R * 0.08), dpr);
+    for (const l of this.offerLayers) l.place(cx, cy, R * PRED_W, R * PRED_H, dpr);
+    this.offerKey = '';
     this.history.layout();
     this.stack.layout();
     this.layoutPreds(true);
@@ -350,10 +400,19 @@ export class Compass {
     return { root: 0, name: '', sub: '', nameSize: 0, subSize: 0, align: 'top', ax: cx, ay: ky, x0: cx - hw, x1: cx + hw, y0: ky - size * 0.75, y1: ky + size * 0.75, opacity: 0 };
   }
 
-  noteOn(note: number, vel: number): void {
+  noteOn(note: number, vel: number, t: number): void {
     const pc = note % 12;
     if (vel > this.flare[pc]) this.flare[pc] = vel;
     this.noteFlag = true;
+    // A line note is a single key above middle C; anything struck with it is part of a chord.
+    // A settled note still waiting (several arrived in one frame) is read before the next one.
+    if (this.lineNote >= 0 && t - this.lineT >= LINE_SETTLE) this.commitLine(t, this.a?.chord ?? null);
+    if (t - this.lastOnT < LINE_SETTLE) this.lineNote = -1;
+    else if (note >= 60) {
+      this.lineNote = note;
+      this.lineT = t;
+    }
+    this.lastOnT = t;
   }
 
   setAnalysis(a: Analysis, t: number): void {
@@ -365,8 +424,9 @@ export class Compass {
       const faint = c.conf < LOW_CONF;
       const roman = a.roman ?? '';
       const key = c.name + '|' + runner + '|' + roman + '|' + (faint ? 1 : 0);
-      if (key !== this.chordKey) {
-        this.chordKey = key;
+      this.updateScale(a);
+      if (key + '|' + this.scaleName !== this.chordKey) {
+        this.chordKey = key + '|' + this.scaleName;
         this.chordName = c.name;
         this.chordRoot = c.root;
         this.runner = runner;
@@ -435,6 +495,8 @@ export class Compass {
     if (!c) {
       this.history.end(t);
       this.curFn = null;
+      this.scale = null;
+      this.scaleKey = '';
     }
 
     const k = a.key;
@@ -552,7 +614,8 @@ export class Compass {
       this.thenKey = tk;
       if (then) this.thenLayer.at(...this.canvasCenter(then));
       this.thenLayer.changed();
-    }
+    }    // Reharm labels yield to the prediction labels.
+    this.layoutOffers();
   }
 
   /**
@@ -795,6 +858,14 @@ export class Compass {
       }
     }
 
+    // ---- scale halo under the ring, and the right hand's line read against it ----
+    this.stepLine(t, chord);
+    this.drawHalo(sp, t, dt, on.scale, breath);
+
+    // ---- reharm offers: hollow diamonds for what you could play instead ----
+    this.updateOffers(chord, t);
+    if (on.reharm && chord) this.drawOffers(sp, t, chord.root);
+
     // ---- tendency tails: where each guide tone or tension wants to go in the predicted chord ----
     this.updateTails(chord);
     if (on.tendency && chord) this.drawTails(sp, t);
@@ -873,6 +944,11 @@ export class Compass {
     this.chordEvent = false;
     this.stack.draw(sp, t, on.stack, on.touch ? touch : null);
     if (chord) this.history.setVoices(this.stack.current);
+    {
+      const target = a ? tensionOf(chord ? { root: chord.root, q: chord.quality } : null, a.pcs, a.key) : 0;
+      this.tension += (target - this.tension) * (1 - Math.exp(-dt / TENSION_TAU));
+      this.history.pushTension(t, this.tension);
+    }
     this.history.draw(sp, t, on.history && this.L.view === 'compass', on.predictions, on.voices);
 
     // ---- pedal indicator (bottom right) ----
@@ -900,11 +976,241 @@ export class Compass {
       this.badgeLayer.changed();
     }
     this.badgeLayer.opacity = on.predictions ? (bAge < BADGE_HOLD ? 1 : clamp01(1 - (bAge - BADGE_HOLD) / BADGE_FADE)) : 0;
+    const eAge = t - this.encT;
+    this.encLayer.opacity = on.scale && eAge < ENC_FADE ? clamp01(1.4 * (1 - eAge / ENC_FADE)) : 0;
+    for (let i = 0; i < 3; i++) this.offerLayers[i].opacity = on.reharm && chord && !turning && this.offerLabels[i] ? this.offerLabels[i]!.opacity : 0;
     this.chordLayer.update(t);
     this.keyLayer.update(t);
     for (const l of this.predLayers) l.update(t);
     this.thenLayer.update(t);
     this.badgeLayer.update(t);
+    this.encLayer.update(t);
+    for (const l of this.offerLayers) l.update(t);
+  }
+
+  // ---------- scale halo and line reading ----------
+
+  /** Re-pick the chord-scale when the chord's name or the key changes (not on every passing note). */
+  private updateScale(a: Analysis): void {
+    const c = a.chord;
+    if (!c) return;
+    const k = `${c.name}|${c.root}${c.quality}|${a.key ? a.key.tonic + a.key.mode : ''}`;
+    if (k === this.scaleKey) return;
+    this.scaleKey = k;
+    this.scale = scaleFor(c.root, c.quality, a.pcs, a.key);
+    this.scaleName = this.scale ? this.scale.name.toUpperCase() : '';
+  }
+
+  /** A single right-hand note that has settled (nothing struck with it) is read against the scale. */
+  private stepLine(t: number, chord: Analysis['chord']): void {
+    if (this.lineNote >= 0 && t - this.lineT >= LINE_SETTLE) this.commitLine(t, chord);
+  }
+
+  private commitLine(t: number, chord: Analysis['chord']): void {
+    const tones = chord ? chordTones(chord.root, chord.quality) : [];
+    const ln = readLineNote(this.lineNote, this.lineT, this.line, this.scale, tones);
+    this.lineNote = -1;
+    this.line.push(ln);
+    if (this.line.length > 8) this.line.shift();
+    if (ln.enclosure) {
+      const pc = ln.note % 12;
+      this.encPc = pc;
+      this.encT = t;
+      const ang = angOf(pc);
+      const { cx, cy, R } = this.L;
+      this.encLayer.at(cx + Math.cos(ang) * R * 0.68, cy + Math.sin(ang) * R * 0.68);
+      this.encLayer.changed();
+    }
+  }
+
+  /**
+   * The scale as a faint band just inside the ring (a diatonic mode is a
+   * seven-note sector in fifths order), its color tone ticked teal and its
+   * alterations magenta. Line notes inside the scale light their segment;
+   * chromatic approaches get a hollow ring on their node; an enclosure gets a
+   * dashed gold bracket around its target.
+   */
+  private drawHalo(sp: SpriteBatch, t: number, dt: number, on: boolean, breath: number): void {
+    const { cx, cy, R } = this.L;
+    const sc = this.scale;
+    const k = 1 - Math.exp(-dt / 0.25);
+    for (let pc = 0; pc < 12; pc++) this.haloW[pc] += ((sc && sc.pcs.includes(pc) ? 1 : 0) - this.haloW[pc]) * k;
+    if (!on) return;
+    const hr = R * HALO_R;
+    const th = Math.max(2, R * HALO_THICK);
+    for (let pc = 0; pc < 12; pc++) {
+      const w = this.haloW[pc];
+      if (w < 0.01) continue;
+      sp.arc(cx, cy, hr, th, angOf(pc), STEP * 0.47, 0, RING_GREY[0], RING_GREY[1], RING_GREY[2], 0.14 * w * breath);
+    }
+    if (sc) {
+      for (const m of sc.marks) {
+        const c = m.kind === 'alt' ? ROLE_RGB.alt : ROLE_RGB.tension;
+        sp.arc(cx, cy, hr, th * 1.25, angOf(m.pc), 0.05, 0, c[0], c[1], c[2], 0.75 * this.haloW[m.pc]);
+      }
+    }
+    const dot = Math.max(1, R * 0.004);
+    for (const ln of this.line) {
+      const age = t - ln.t;
+      if (age > LINE_FADE || age < 0) continue;
+      const f = 1 - age / LINE_FADE;
+      const pc = ln.note % 12;
+      const ang = angOf(pc);
+      if (ln.kind === 'in') {
+        const c3 = pc * 3;
+        sp.arc(cx, cy, hr, th * 1.3, ang, STEP * 0.47, 0, NOTE_RGB[c3], NOTE_RGB[c3 + 1], NOTE_RGB[c3 + 2], 0.85 * f);
+      } else {
+        // outside the scale the band is empty: a hollow ring there reads as a deliberate approach note
+        sp.ring(cx + Math.cos(ang) * hr, cy + Math.sin(ang) * hr, th * 0.9, dot * 1.2, LABEL_LIT[0], LABEL_LIT[1], LABEL_LIT[2], 0.95 * f);
+      }
+    }
+    const eAge = t - this.encT;
+    if (this.encPc >= 0 && eAge < ENC_FADE) {
+      const f = 1 - eAge / ENC_FADE;
+      const ang = angOf(this.encPc);
+      const g = ROLE_RGB.guide;
+      const x = cx + Math.cos(ang) * R, y = cy + Math.sin(ang) * R;
+      // two brackets, one on each side of the target along the ring
+      sp.arc(x, y, R * 0.09, dot * 1.6, ang + Math.PI / 2, 0.6, 0, g[0], g[1], g[2], 0.9 * f);
+      sp.arc(x, y, R * 0.09, dot * 1.6, ang - Math.PI / 2, 0.6, 0, g[0], g[1], g[2], 0.9 * f);
+    }
+  }
+
+  private drawEnc(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `600 ${Math.max(10, this.L.R * 0.034)}px ${MONO_FONT}`;
+    ctx.fillStyle = 'oklch(0.86 0.13 85)';
+    ctx.letterSpacing = '3px';
+    ctx.fillText('ENCLOSURE', w / 2, h / 2);
+    ctx.letterSpacing = '0px';
+  }
+
+  // ---------- reharm offers ----------
+
+  /** Recompute the offers when the chord, the likely next chord, or the voicing changes. */
+  private updateOffers(chord: Analysis['chord'], t: number): void {
+    const a = this.a;
+    const notes = this.stack.current ? this.stack.current.voices.map((v) => v.note) : [];
+    const key = !chord || !a ? '' : `${chord.root}${chord.quality}|${a.predictions.map((p) => `${p.root}${p.q}${p.p >= 0.3 ? 1 : 0}`).join(',')}|${notes.join(',')}|${a.key ? a.key.tonic : ''}`;
+    if (key === this.offerKey) return;
+    this.offerKey = key;
+    this.offers = chord && a ? reharmsFor({ root: chord.root, q: chord.quality }, a.predictions, notes, a.key) : [];
+    const sig = this.offers.map((o) => o.why).join('|') + (chord ? chord.root : '');
+    if (sig !== this.offerSig) {
+      this.offerSig = sig;
+      this.offerT = t;
+    }
+    this.layoutOffers();
+  }
+
+  /** Each offer's label hangs off its first diamond; one that would collide with a prediction is left as a bare diamond. */
+  private layoutOffers(): void {
+    const { cx, cy, R } = this.L;
+    const placed: PredLabel[] = [...this.predLabels.filter((l): l is PredLabel => !!l)];
+    if (this.thenLabel) placed.push(this.thenLabel);
+    const kb = this.keyTitleBox();
+    if (kb) placed.push(kb);
+    for (let i = 0; i < 3; i++) {
+      const o = this.offers[i];
+      let lab: PredLabel | null = null;
+      if (o) {
+        const name = o.path.map((s) => s.name).join(' → ');
+        const nameSize = Math.max(12, R * 0.05);
+        const subSize = Math.max(10, R * 0.034);
+        this.measure.font = `500 ${nameSize}px ${DISPLAY_FONT}`;
+        let bw = this.measure.measureText(name).width;
+        this.measure.font = `500 ${subSize}px ${MONO_FONT}`;
+        bw = Math.min(R * PRED_W, Math.max(bw, this.measure.measureText(o.why).width + o.why.length));
+        const bh = nameSize * 1.05 + subSize * 1.35;
+        const ang = baseAng(o.path[0].root) + (this.layers.tonicUp ? this.wheelTarget : 0);
+        const c = Math.cos(ang), s = Math.sin(ang);
+        const align: Align = Math.abs(c) < 0.42 ? (s > 0 ? 'top' : 'bottom') : c > 0 ? 'left' : 'right';
+        const ax = cx + c * R * (OFFER_R + 0.04), ay = cy + s * R * (OFFER_R + 0.04);
+        let x0: number, x1: number, y0: number, y1: number;
+        if (align === 'left') [x0, x1, y0, y1] = [ax, ax + bw, ay - bh / 2, ay + bh / 2];
+        else if (align === 'right') [x0, x1, y0, y1] = [ax - bw, ax, ay - bh / 2, ay + bh / 2];
+        else if (align === 'top') [x0, x1, y0, y1] = [ax - bw / 2, ax + bw / 2, ay, ay + bh];
+        else [x0, x1, y0, y1] = [ax - bw / 2, ax + bw / 2, ay - bh, ay];
+        const cand: PredLabel = { root: o.path[0].root, name, sub: o.why, nameSize, subSize, align, ax, ay, x0, y0, x1, y1, opacity: i === 0 ? 0.95 : 0.75 };
+        const floor = this.layers.history && this.L.view === 'compass' ? this.history.top + R * 0.02 : -1e9;
+        if (y0 >= floor && !placed.some((q) => overlaps(q, cand, R * 0.02))) {
+          lab = cand;
+          placed.push(cand);
+        }
+      }
+      this.offerLabels[i] = lab;
+      const k = lab ? `${lab.name}|${lab.sub}|${lab.align}|${Math.round(lab.ax)}|${Math.round(lab.ay)}` : '';
+      if (k !== this.offerLabelKeys[i]) {
+        this.offerLabelKeys[i] = k;
+        this.offerWhy[i] = lab ? lab.sub : '';
+        if (lab) this.offerLayers[i].at(...this.canvasCenter(lab));
+        this.offerLayers[i].changed();
+      }
+    }
+  }
+
+  /**
+   * Possible, not probable: each offer is a hollow diamond per chord on its own
+   * track between the key arc and the orbit, joined by a fine dotted path from
+   * the chord now sounding into the chord it lands on. Drawn under the
+   * predicted tier: no glow, no fill, one neutral violet.
+   */
+  private drawOffers(sp: SpriteBatch, t: number, fromRoot: number): void {
+    const { cx, cy, R } = this.L;
+    const fade = clamp01((t - this.offerT - PRED_DELAY - 0.3) / PRED_FADE);
+    if (fade <= 0) return;
+    const c = OFFER_RGB;
+    const rd = R * OFFER_R;
+    const thick = Math.max(1, R * 0.003);
+    for (let i = 0; i < this.offers.length; i++) {
+      const o = this.offers[i];
+      const op = (i === 0 ? 0.7 : 0.45) * fade;
+      let pa = angOf(fromRoot), pr = R * NEEDLE_R;
+      for (let j = 0; j < o.path.length; j++) {
+        const ang = angOf(o.path[j].root);
+        this.spiral(sp, pa, pr, ang, rd, R * 0.003, c[0], c[1], c[2], op * 0.6, -1, 1);
+        const d = R * (j === 0 ? 0.022 : 0.016);
+        const x = cx + Math.cos(ang) * rd, y = cy + Math.sin(ang) * rd;
+        sp.line(x, y + d, x + d, y, thick, c[0], c[1], c[2], op);
+        sp.line(x + d, y, x, y - d, thick, c[0], c[1], c[2], op);
+        sp.line(x, y - d, x - d, y, thick, c[0], c[1], c[2], op);
+        sp.line(x - d, y, x, y + d, thick, c[0], c[1], c[2], op);
+        pa = ang;
+        pr = rd;
+      }
+      this.spiral(sp, pa, pr, angOf(o.target), R * ORBIT_R, R * 0.0025, c[0], c[1], c[2], op * 0.4, -1, 1);
+    }
+  }
+
+  private drawOffer(ctx: CanvasRenderingContext2D, w: number, h: number, i: number): void {
+    const l = this.offerLabels[i];
+    if (!l) return;
+    const bh = l.nameSize * 1.05 + l.subSize * 1.35;
+    let top: number, x: number;
+    if (l.align === 'left') {
+      ctx.textAlign = 'left';
+      x = 2;
+      top = h / 2 - bh / 2;
+    } else if (l.align === 'right') {
+      ctx.textAlign = 'right';
+      x = w - 2;
+      top = h / 2 - bh / 2;
+    } else {
+      ctx.textAlign = 'center';
+      x = w / 2;
+      top = l.align === 'top' ? h - bh : 0;
+    }
+    ctx.textBaseline = 'top';
+    // Possible, not predicted: one violet with a diamond, never a root's hue like a prediction.
+    ctx.font = `500 ${l.nameSize}px ${DISPLAY_FONT}`;
+    ctx.fillStyle = OFFER_CSS;
+    ctx.fillText('◇ ' + l.name, x, top);
+    ctx.font = `500 ${l.subSize}px ${MONO_FONT}`;
+    ctx.fillStyle = 'rgba(200,196,225,0.6)';
+    ctx.letterSpacing = '0.5px';
+    ctx.fillText(l.sub, x, top + l.nameSize * 1.08);
+    ctx.letterSpacing = '0px';
   }
 
   /** Recompute the tendency tails when the voicing or the top prediction changes. */
@@ -1094,11 +1400,30 @@ export class Compass {
       ctx.fillText('or ' + this.runner, w / 2, y);
       y += ref * 0.5;
     }
-    if (this.roman) {
-      ctx.font = `500 ${Math.max(10, ref * 0.3)}px ${MONO_FONT}`;
-      ctx.fillStyle = cssOklch(this.chordRoot, 0.82, 0.08, 0.9);
+    // The numeral, and the scale beside it in small caps ("i⁷  D DORIAN"), centered as one line.
+    const scale = this.layers.scale ? this.scaleName : '';
+    if (this.roman || scale) {
+      const rFont = `500 ${Math.max(10, ref * 0.3)}px ${MONO_FONT}`;
+      const sFont = `500 ${Math.max(9, ref * 0.17)}px ${MONO_FONT}`;
       ctx.letterSpacing = '2px';
-      ctx.fillText(this.roman, w / 2, y);
+      ctx.font = rFont;
+      const rw = this.roman ? ctx.measureText(this.roman).width : 0;
+      ctx.font = sFont;
+      const sw = scale ? ctx.measureText(scale).width : 0;
+      const gap = this.roman && scale ? ref * 0.22 : 0;
+      let x = w / 2 - (rw + gap + sw) / 2;
+      ctx.textAlign = 'left';
+      if (this.roman) {
+        ctx.font = rFont;
+        ctx.fillStyle = cssOklch(this.chordRoot, 0.82, 0.08, 0.9);
+        ctx.fillText(this.roman, x, y);
+        x += rw + gap;
+      }
+      if (scale) {
+        ctx.font = sFont;
+        ctx.fillStyle = 'rgba(200,206,225,0.55)';
+        ctx.fillText(scale, x, y);
+      }
       ctx.letterSpacing = '0px';
     }
   }
