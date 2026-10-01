@@ -15,6 +15,9 @@ export const LAYERS = [
   { id: 'touch', label: 'Pedal & touch', title: 'Pedal-held notes go hazy and clear when the dampers drop; the stack shows how hard each note was struck' },
   { id: 'tendency', label: 'Tendency tails', title: 'Dotted tails on the ring where each guide tone or tension wants to move in the predicted chord' },
   { id: 'voices', label: 'Hidden voices', title: 'A line for each voice of your voicing under the lead sheet, dotted into the predicted chord' },
+  { id: 'scale', label: 'Scale & line', title: 'The chord-scale glows under the ring (color tones and alterations ticked); right-hand notes read as inside, chromatic approach, or enclosure' },
+  { id: 'reharm', label: 'Reharm offers', title: 'Hollow diamonds for substitutions you could play instead (tritone sub, backdoor), smoothest first. Possible, not predicted' },
+  { id: 'tensionCurve', label: 'Tension curve', title: 'A ribbon under the lead sheet that rises with harmonic tension and falls as it resolves' },
   { id: 'weather', label: 'Harmonic weather', title: 'A soft glow behind the compass: cool on tonic, warm on dominant' },
   { id: 'tonicUp', label: 'Tonic at top', title: 'Turn the wheel so the key’s tonic sits at 12 o’clock' },
 ] as const;

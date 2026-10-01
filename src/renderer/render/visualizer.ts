@@ -117,7 +117,8 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
       case 'on':
         if (ev.vel > 0) {
           river.noteOn(ev.note, ev.vel, t);
-          compass.noteOn(ev.note, ev.vel);
+          // The line reader wants the gaps between notes, so it gets the event's own time (within this frame's reach).
+          compass.noteOn(ev.note, ev.vel, Number.isFinite(ev.t) ? Math.min(t, Math.max(t - 0.5, (ev.t - epochMs) / 1000)) : t);
           sawNoteOn = true;
         } else river.noteOff(ev.note, t);
         break;
