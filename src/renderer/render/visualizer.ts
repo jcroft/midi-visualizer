@@ -101,6 +101,7 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
   let pCount = 0;
   let sawNoteOn = false;
   const instant = new Float32Array(12);
+  const noteLvl = new Float32Array(128);
 
   // Chord bands in the river (ring buffer, preallocated).
   const bandRoot = new Int8Array(BAND_CAP).fill(-1);
@@ -190,9 +191,12 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
   /** 12 immediate pitch-class levels from the local note state, so compass nodes light on the key-press frame. */
   function computeInstant(t: number): void {
     instant.fill(0);
+    noteLvl.fill(0);
     for (let n = LOWEST_NOTE; n < LOWEST_NOTE + KEY_COUNT; n++) {
       const lvl = river.level(n, t);
       if (lvl <= 0.02) continue;
+      // The hand shape: held keys count fully, pedal-sustained ones only while fresh, release tails not at all.
+      noteLvl[n] = river.held[n] ? lvl : river.sustained[n] ? lvl * 0.5 : 0;
       const pc = n % 12;
       const k = Math.min(1, lvl);
       if (k > instant[pc]) instant[pc] = k;
@@ -300,7 +304,7 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
       computeInstant(t);
       if (view === 'river') drawRiverDecor(t);
       over.begin();
-      compass.draw(over, t, dt, instant, river.pedalDown);
+      compass.draw(over, t, dt, instant, noteLvl, river.pedalDown);
       over.end();
       pipeline.render();
     },

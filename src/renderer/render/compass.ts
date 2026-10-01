@@ -9,11 +9,14 @@ import { BufferAttribute, BufferGeometry, DynamicDrawUsage, Mesh, MeshBasicNodeM
 import { uniform, vec4 } from 'three/tsl';
 import type { Analysis, Fn, Prediction } from '@shared/analysis';
 import { BRIGHT_RGB, DIM_RGB, NOTE_RGB, POLY_RGB, cssOklch, fifthsPos } from './color';
-import { type Layers, allLayersOn } from './layers';
+import { type Layers, defaultLayers } from './layers';
 import { type Layout, premultipliedBlend } from './layout';
 import { type Spring, nearestAngle, stepSpring } from './spring';
 import type { Cell, SpriteBatch } from './sprites';
 import { TextLayer } from './text';
+import { HistoryStrip } from './history';
+import { Stack } from './stack';
+import { FN_RGB, fnFromRoman } from './taxonomy';
 import {
   BADGE_FADE,
   BADGE_HOLD,
@@ -27,8 +30,12 @@ import {
   COMET_FILL,
   DISPLAY_FONT,
   HAIRLINE,
-  HISTORY_LEN,
-  HISTORY_OPACITY,
+  KEY_TITLE_R,
+  KEY_TITLE_SIZE,
+  WEATHER_ALPHA,
+  WEATHER_R,
+  WEATHER_TAU,
+  WHEEL_OMEGA,
   IDLE_AFTER,
   KEY_ARC_R,
   KEY_ARC_THICK,
@@ -64,8 +71,12 @@ import {
 } from './tuning';
 
 const STEP = Math.PI / 6;
-/** Angle of a pitch class on the ring: C at the top, fifths clockwise (y-up radians). */
-export const angOf = (pc: number): number => Math.PI / 2 - fifthsPos(pc) * STEP;
+/** Wheel rotation (radians, CCW). 0 = C at the top; tonic-up turns it so the key's tonic is there. */
+let wheel = 0;
+/** Angle of a pitch class on the unturned ring: C at the top, fifths clockwise (y-up radians). */
+const baseAng = (pc: number): number => Math.PI / 2 - fifthsPos(pc) * STEP;
+/** Angle of a pitch class on the ring as drawn. */
+export const angOf = (pc: number): number => baseAng(pc) + wheel;
 const mod12 = (n: number): number => ((n % 12) + 12) % 12;
 const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
 
@@ -113,7 +124,7 @@ const PRED_H = 0.42;
 const RIPPLES = 6;
 
 export class Compass {
-  layers: Layers = allLayersOn();
+  layers: Layers = defaultLayers();
 
   private a: Analysis | null = null;
   private readonly disp = new Float32Array(12);
@@ -162,7 +173,17 @@ export class Compass {
   private badge = '';
   private badgeRoot = 0;
   private badgeT = -1e9;
-  private readonly history: { name: string; roman: string; root: number }[] = [];
+  private keyTonicName = '';
+  private keyModeName = '';
+  private keyImplied = false;
+  private histKey = '';
+  private wheelTarget = 0;
+  private readonly wheelSpring: Spring = { x: 0, v: 0 };
+  private readonly weather = new Float32Array(3);
+  private weatherK = 0;
+  private curFn: Fn | null = null;
+  /** A new chord event arrived since the last frame (for the Stack's voice leading). */
+  private chordEvent = false;
 
   private readonly chordLayer: TextLayer;
   private readonly keyLayer: TextLayer;
@@ -176,7 +197,8 @@ export class Compass {
   private thenLabel: PredLabel | null = null;
   private thenKey = '';
   private readonly badgeLayer: TextLayer;
-  private readonly historyLayer: TextLayer;
+  readonly history: HistoryStrip;
+  readonly stack: Stack;
   private readonly measure = document.createElement('canvas').getContext('2d')!;
 
   // Polygon fill (triangle fan of up to 12 vertices).
@@ -202,11 +224,11 @@ export class Compass {
       delay: 0,
     });
     this.keyLayer = new TextLayer(scene, 60, (ctx, w, h) => this.drawKey(ctx, w, h), {
-      out: KEY_FADE,
+      out: 0.35,
       outRise: 0,
       in: KEY_FADE,
-      inRise: 0,
-      delay: 0,
+      inRise: LABEL_RISE_PX,
+      delay: 0.15,
     });
     const predFade = { out: 0.2, outRise: 0, in: PRED_FADE, inRise: 0, delay: PRED_DELAY };
     for (let i = 0; i < 3; i++) {
@@ -223,13 +245,8 @@ export class Compass {
       inRise: LABEL_RISE_PX,
       delay: 0.05,
     });
-    this.historyLayer = new TextLayer(scene, 60, (ctx, w, h) => this.drawHistory(ctx, w, h), {
-      out: 0.25,
-      outRise: 0,
-      in: 0.25,
-      inRise: 0,
-      delay: 0,
-    });
+    this.history = new HistoryStrip(scene, L);
+    this.stack = new Stack(scene, L);
     this.chordLayer.changed(); // shows "play a chord"
 
     const geo = new BufferGeometry();
@@ -256,30 +273,47 @@ export class Compass {
   }
 
   setLayers(layers: Layers): void {
+    const stackChanged = layers.stack !== this.layers.stack;
     this.layers = { ...layers };
+    if (stackChanged) this.chordLayer.place(this.L.cx, this.L.cy - this.L.R * this.chordDrop(), this.L.R * 2.0, this.L.R * 1.3, this.L.dpr);
+    this.layoutPreds(true);
   }
 
   layout(): void {
     const { cx, cy, R, dpr, w, h } = this.L;
     const compassView = this.L.view === 'compass';
-    this.chordLayer.place(cx, cy - R * 0.06, R * 2.0, R * 1.3, dpr);
+    void w;
+    this.chordLayer.place(cx, cy - R * this.chordDrop(), R * 2.0, R * 1.3, dpr);
     if (compassView) {
-      // Top right, out of the compass's way (the HUD lives top left).
-      const kw = Math.max(260, R * 1.4);
-      const kh = Math.max(20, R * 0.09);
-      this.keyLayer.place(w - 24 - kw / 2, h - 24 - kh / 2, kw, kh, dpr);
+      // The key is a title above the ring.
+      const size = R * KEY_TITLE_SIZE;
+      const ky = Math.min(cy + R * KEY_TITLE_R, h - 0.75 * size - 16);
+      this.keyLayer.place(cx, ky, R * 1.6, size * 1.9, dpr);
     } else {
       this.keyLayer.place(cx, cy + R * 1.62, R * 3.6, Math.max(18, R * 0.2), dpr);
     }
     for (const l of this.predLayers) l.place(cx, cy, R * PRED_W, R * PRED_H, dpr);
     this.thenLayer.place(cx, cy, R * PRED_W, R * PRED_H, dpr);
-    this.badgeLayer.place(cx, cy - R * 0.66, R * 1.6, Math.max(18, R * 0.12), dpr);
-    const hh = Math.max(36, R * 0.15);
-    const hw = Math.min(w * 0.42, Math.max(320, R * 1.9));
-    this.historyLayer.place(24 + hw / 2, 64 + hh / 2, hw, hh, dpr);
+    this.badgeLayer.place(cx, cy - R * 0.74, R * 1.6, Math.max(18, R * 0.12), dpr);
+    this.history.layout();
+    this.stack.layout();
     this.layoutPreds(true);
-    this.historyLayer.changed();
     this.keyLayer.changed();
+  }
+
+  /** The chord name sits lower when the Stack is using the top of the interior. */
+  private chordDrop(): number {
+    return this.layers.stack ? 0.3 : 0.06;
+  }
+
+  /** Bounding box of the key title (compass view), so prediction labels keep clear of it. */
+  private keyTitleBox(): PredLabel | null {
+    if (this.L.view !== 'compass' || !this.keyTonicName || !this.layers.key) return null;
+    const { cx, cy, R, h } = this.L;
+    const size = R * KEY_TITLE_SIZE;
+    const ky = Math.min(cy + R * KEY_TITLE_R, h - 0.75 * size - 16);
+    const hw = R * 0.42;
+    return { root: 0, name: '', sub: '', nameSize: 0, subSize: 0, align: 'top', ax: cx, ay: ky, x0: cx - hw, x1: cx + hw, y0: ky - size * 0.75, y1: ky + size * 0.75, opacity: 0 };
   }
 
   noteOn(note: number, vel: number): void {
@@ -307,17 +341,16 @@ export class Compass {
         this.chordLayer.changed();
       }
 
-      // Chord history: a new event appends, a refinement rewrites the last entry.
-      const last = this.history[this.history.length - 1];
-      if (a.changed || !last) {
-        this.history.push({ name: c.name, roman, root: c.root });
-        if (this.history.length > HISTORY_LEN) this.history.shift();
-        this.historyLayer.changed();
-      } else if (last.name !== c.name || last.roman !== roman) {
-        last.name = c.name;
-        last.roman = roman;
-        last.root = c.root;
-        this.historyLayer.changed();
+      // Lead sheet: a new event appends (with a key-change mark if the key moved), a refinement rewrites it.
+      if (a.changed || !this.history.hasCurrent) {
+        const kl = a.key ? a.key.label : '';
+        const keyChange = kl && kl !== this.histKey && this.histKey ? kl : '';
+        if (kl) this.histKey = kl;
+        this.curFn = a.landing?.fn ?? fnFromRoman(roman);
+        this.history.push(c.name, roman, c.root, this.curFn, keyChange, t);
+        this.chordEvent = true;
+      } else {
+        this.history.refine(c.name, roman, c.root);
       }
 
       if (a.changed && c.root !== this.lastRoot) {
@@ -358,21 +391,35 @@ export class Compass {
       if (a.changed) this.lastRoot = c.root;
     }
 
+    if (!c) {
+      this.history.end(t);
+      this.curFn = null;
+    }
+
     const k = a.key;
     let kt = '';
     if (k) {
       let label = k.label.toUpperCase();
       if (k.mode === 'major' && !/MAJOR/.test(label)) label += ' MAJOR';
       kt = 'KEY · ' + label + (k.implied ? ' (IMPLIED)' : '');
+      this.keyTonicName = k.label.split(' ')[0];
+      this.keyModeName = k.mode.toUpperCase();
+      this.keyImplied = k.implied;
       if (k.tonic !== this.lastKeyTonic) {
         this.keyChangeT = t;
         this.lastKeyTonic = k.tonic;
       }
+      // Tonic-up turns the wheel only for a confirmed key.
+      if (!k.implied) this.wheelTarget = Math.PI / 2 - baseAng(k.tonic);
     }
     if (kt !== this.keyText) {
       this.keyText = kt;
       this.keyLayer.changed();
     }
+
+    // The lead sheet's future: the top prediction and the chord after it.
+    const top = a.predictions[0];
+    this.history.setFuture(top ? [{ name: top.name, roman: top.roman ?? '', root: top.root }, ...(top.then ? [{ name: top.then.name, roman: top.then.roman ?? '', root: top.then.root }] : [])] : []);
 
     // The ghost arcs restart their fade-in only when the predicted chords change, not when a probability shifts.
     let pk = '';
@@ -400,7 +447,10 @@ export class Compass {
     const a = this.a;
     // Predictions stay up through a silence: the gap is exactly when "what's next" is useful.
     const preds = a ? a.predictions.slice(0, 3) : [];
-    const placed: PredLabel[] = [];
+    const obstacles: PredLabel[] = [];
+    const kb = this.keyTitleBox();
+    if (kb) obstacles.push(kb);
+    const placed: PredLabel[] = [...obstacles];
     const out: (PredLabel | null)[] = [null, null, null];
     for (let i = 0; i < preds.length; i++) {
       const p = preds[i];
@@ -415,7 +465,7 @@ export class Compass {
         // Still colliding two tiers out: merge onto the label it hits.
         const probe = this.makeLabel(p, false, null, 0);
         const host = placed.find((q) => overlaps(q, probe, this.L.R * 0.02));
-        if (host) host.name += ' · ' + p.name;
+        if (host && !obstacles.includes(host)) host.name += ' · ' + p.name;
         continue;
       }
       placed.push(lab);
@@ -483,7 +533,8 @@ export class Compass {
     bw = Math.min(bw, R * PRED_W);
     const bh = nameSize * 1.05 + (sub ? subSize * 1.35 : 0);
 
-    const ang = angOf(p.root);
+    // Laid out where the wheel is heading, so labels don't reflow while it turns.
+    const ang = baseAng(p.root) + (this.layers.tonicUp ? this.wheelTarget : 0);
     const c = Math.cos(ang);
     const s = Math.sin(ang);
     const align: Align = Math.abs(c) < 0.42 ? (s > 0 ? 'top' : 'bottom') : c > 0 ? 'left' : 'right';
@@ -514,9 +565,10 @@ export class Compass {
 
   /**
    * Draw into the sprite batch. `instant` = 12 immediate pitch-class levels from
-   * the local note state (so nodes light on the same frame as the key press).
+   * the local note state (so nodes light on the same frame as the key press);
+   * `levels` = the same per MIDI note, for the voicing stack and register web.
    */
-  draw(sp: SpriteBatch, t: number, dt: number, instant: Float32Array, pedalDown: boolean): void {
+  draw(sp: SpriteBatch, t: number, dt: number, instant: Float32Array, levels: Float32Array, pedalDown: boolean): void {
     const { cx, cy, R } = this.L;
     const s = R / 180; // size reference
     const hair = Math.max(1, R * HAIRLINE);
@@ -549,16 +601,30 @@ export class Compass {
       if (this.lit[pc]) this.litOrder[nLit++] = pc;
     }
 
-    // ---- springs ----
-    if (chord) stepSpring(this.needle, nearestAngle(this.needle.x, angOf(chord.root)), NEEDLE_OMEGA, dt);
+    // ---- springs (in unturned angles; the wheel is added when drawn) ----
+    stepSpring(this.wheelSpring, nearestAngle(this.wheelSpring.x, on.tonicUp ? this.wheelTarget : 0), WHEEL_OMEGA, dt);
+    wheel = this.wheelSpring.x;
+    const turning = Math.abs(this.wheelSpring.v) > 0.4;
+    if (chord) stepSpring(this.needle, nearestAngle(this.needle.x, baseAng(chord.root)), NEEDLE_OMEGA, dt);
     const key = a?.key ?? null;
     if (key) {
-      stepSpring(this.keyArc, nearestAngle(this.keyArc.x, angOf(parentMajor(key.tonic, key.mode))), KEY_OMEGA, dt);
-      stepSpring(this.keyTick, nearestAngle(this.keyTick.x, angOf(key.tonic)), KEY_OMEGA, dt);
+      stepSpring(this.keyArc, nearestAngle(this.keyArc.x, baseAng(parentMajor(key.tonic, key.mode))), KEY_OMEGA, dt);
+      stepSpring(this.keyTick, nearestAngle(this.keyTick.x, baseAng(key.tonic)), KEY_OMEGA, dt);
     }
 
-    // ---- ring ----
-    sp.ring(cx, cy, R, hair, RING_GREY[0], RING_GREY[1], RING_GREY[2], 0.16 * breath);
+    // ---- harmonic weather: a faint wash tinted by the current chord's function ----
+    {
+      const k = 1 - Math.exp(-dt / WEATHER_TAU);
+      const tgt = this.curFn ? FN_RGB[this.curFn] : null;
+      if (tgt) for (let i = 0; i < 3; i++) this.weather[i] += (tgt[i] - this.weather[i]) * k;
+      this.weatherK += ((tgt ? 1 : 0) - this.weatherK) * k;
+      if (on.weather && this.weatherK > 0.01) {
+        sp.glow(cx, cy, R * WEATHER_R, this.weather[0], this.weather[1], this.weather[2], WEATHER_ALPHA * this.weatherK * breath);
+      }
+    }
+
+    // ---- ring (structure: a quiet hairline) ----
+    sp.ring(cx, cy, R, hair, RING_GREY[0], RING_GREY[1], RING_GREY[2], 0.1 * breath);
 
     // ---- key arc (covers the 7 diatonic pcs: IV .. VII of the parent major) ----
     if (key && on.key) {
@@ -566,10 +632,18 @@ export class Compass {
       const conf = 0.45 + 0.55 * Math.min(1, key.conf);
       const thick = Math.max(6, R * KEY_ARC_THICK);
       const kr = R * KEY_ARC_R;
-      sp.arc(cx, cy, kr, thick, this.keyArc.x - 2 * STEP, 3.4 * STEP, key.implied ? 14 : 0, DIM_RGB[pm], DIM_RGB[pm + 1], DIM_RGB[pm + 2], 0.55 * conf * breath);
+      sp.arc(cx, cy, kr, thick, this.keyArc.x + wheel - 2 * STEP, 3.4 * STEP, key.implied ? 14 : 0, DIM_RGB[pm], DIM_RGB[pm + 1], DIM_RGB[pm + 2], (key.implied ? 0.35 : 0.55) * conf * breath);
       const flash = Math.exp(-(t - this.keyChangeT) / 0.6);
       const tk = key.tonic * 3;
-      sp.arc(cx, cy, kr, thick, this.keyTick.x, 0.13, 0, BRIGHT_RGB[tk], BRIGHT_RGB[tk + 1], BRIGHT_RGB[tk + 2], (0.5 + 0.5 * flash) * conf, true);
+      const tickAng = this.keyTick.x + wheel;
+      sp.arc(cx, cy, kr, thick, tickAng, 0.13 + 0.07 * flash, 0, BRIGHT_RGB[tk], BRIGHT_RGB[tk + 1], BRIGHT_RGB[tk + 2], (0.5 + 0.5 * flash) * conf, true);
+      // Tether: a hairline from the tonic tick up to the key title, when the tick is on the upper half.
+      const kb = this.keyTitleBox();
+      if (kb && Math.sin(tickAng) > 0.6) {
+        const x0 = cx + Math.cos(tickAng) * (kr + thick);
+        const y0 = cy + Math.sin(tickAng) * (kr + thick);
+        sp.line(x0, y0, cx, kb.y0 - 4, Math.max(1, hair * 0.8), BRIGHT_RGB[tk], BRIGHT_RGB[tk + 1], BRIGHT_RGB[tk + 2], (0.12 + 0.3 * flash) * conf);
+      }
     }
 
     // ---- prediction orbit: satellites, ghost arcs, the second step ----
@@ -628,7 +702,7 @@ export class Compass {
           sp.glow(x, y, R * 0.2 * w + 6 + f * 14 * s, NOTE_RGB[c3] + f, NOTE_RGB[c3 + 1] + f, NOTE_RGB[c3 + 2] + f, 0.85 * w + f * 0.8);
           sp.disc(x, y, (3 + 4 * w) * Math.max(1, s), NOTE_RGB[c3] * (0.8 + w) + f * 0.5, NOTE_RGB[c3 + 1] * (0.8 + w) + f * 0.5, NOTE_RGB[c3 + 2] * (0.8 + w) + f * 0.5, 1);
         } else {
-          sp.disc(x, y, 3 * Math.max(1, s), 0.3, 0.33, 0.45, 0.4);
+          sp.disc(x, y, 3 * Math.max(1, s), 0.3, 0.33, 0.45, 0.3);
         }
         const cell = this.pcCells[pc];
         if (cell) {
@@ -637,18 +711,18 @@ export class Compass {
         }
       }
 
-      // ---- inferred root: a hollow ring (rootless voicing) ----
+      // ---- inferred root (implied tier): a dashed circle where the played root would be ----
       if (chord && chord.rootInferred) {
         const ang = angOf(chord.root);
         const c3 = chord.root * 3;
-        sp.ring(cx + Math.cos(ang) * R, cy + Math.sin(ang) * R, 9 * Math.max(1, s), 1.6 * Math.max(1, s), BRIGHT_RGB[c3], BRIGHT_RGB[c3 + 1], BRIGHT_RGB[c3 + 2], 0.9);
+        sp.arc(cx + Math.cos(ang) * R, cy + Math.sin(ang) * R, R * 0.05, 1.4 * Math.max(1, s), 0, Math.PI, 8, BRIGHT_RGB[c3], BRIGHT_RGB[c3 + 1], BRIGHT_RGB[c3 + 2], 0.85);
       }
     }
 
     // ---- needle, and the trail of recent roots on its track ----
     if (on.needle) {
       const nr = R * NEEDLE_R;
-      let prevAng = chord ? this.needle.x : NaN;
+      let prevAng = chord ? this.needle.x + wheel : NaN;
       for (let i = 0; i < TRAIL_LEN; i++) {
         const root = this.trailRoot[i];
         if (root < 0) break;
@@ -659,21 +733,23 @@ export class Compass {
           break;
         }
         const ang = angOf(root);
-        const op = [0.45, 0.25, 0.12][i] ?? 0.1;
+        // Heard tier: grey with a hint of the root's hue, no glow.
+        const op = [0.5, 0.3, 0.15][i] ?? 0.1;
         const c3 = root * 3;
-        sp.arc(cx, cy, nr, 1.6 * Math.max(1, s), ang, 0.045, 0, BRIGHT_RGB[c3], BRIGHT_RGB[c3 + 1], BRIGHT_RGB[c3 + 2], op * k, true);
+        const hr = 0.25 * BRIGHT_RGB[c3] + 0.75 * RING_GREY[0], hg = 0.25 * BRIGHT_RGB[c3 + 1] + 0.75 * RING_GREY[1], hb = 0.25 * BRIGHT_RGB[c3 + 2] + 0.75 * RING_GREY[2];
+        sp.arc(cx, cy, nr, 1.6 * Math.max(1, s), ang, 0.045, 0, hr, hg, hb, op * k);
         if (!Number.isNaN(prevAng)) {
           // thin arc joining this root to the next-newer one, the short way round
           const near = nearestAngle(prevAng, ang);
           const mid = (prevAng + near) / 2;
           const half = Math.abs(near - prevAng) / 2;
-          if (half > 0.01) sp.arc(cx, cy, nr, Math.max(1, R * 0.003), mid, half, 0, RING_GREY[0], RING_GREY[1], RING_GREY[2], 0.3 * k, true);
+          if (half > 0.01) sp.arc(cx, cy, nr, Math.max(1, R * 0.003), mid, half, 0, RING_GREY[0], RING_GREY[1], RING_GREY[2], 0.2 * k);
         }
         prevAng = ang;
       }
       if (chord) {
         const c3 = chord.root * 3;
-        sp.arc(cx, cy, nr, 2.5 * Math.max(1, s), this.needle.x, 0.09, 0, BRIGHT_RGB[c3], BRIGHT_RGB[c3 + 1], BRIGHT_RGB[c3 + 2], 0.95, true);
+        sp.arc(cx, cy, nr, 2.5 * Math.max(1, s), this.needle.x + wheel, 0.09, 0, BRIGHT_RGB[c3], BRIGHT_RGB[c3 + 1], BRIGHT_RGB[c3 + 2], 0.95, true);
       }
     }
 
@@ -694,6 +770,30 @@ export class Compass {
       sp.ring(cx + Math.cos(ang) * R, cy + Math.sin(ang) * R, 8 + (age / dur) * RIPPLE_TIME * 70 * s * (0.6 + 0.6 * k), 2 * Math.max(1, s), BRIGHT_RGB[c3], BRIGHT_RGB[c3 + 1], BRIGHT_RGB[c3 + 2], (1 - age / dur) * k, true);
     }
 
+    // ---- register web: each sounding note at its pitch-class angle, out by its register, joined low to high ----
+    if (on.register) {
+      let px = NaN, py = NaN;
+      for (let n = 21; n <= 108; n++) {
+        const lv = levels[n];
+        if (lv <= 0.25) continue;
+        const ang = angOf(n % 12);
+        const r = R * (0.22 + (0.68 * (n - 21)) / 87);
+        const x = cx + Math.cos(ang) * r;
+        const y = cy + Math.sin(ang) * r;
+        const c3 = (n % 12) * 3;
+        if (!Number.isNaN(px)) sp.line(px, py, x, y, Math.max(1, R * 0.004), NOTE_RGB[c3], NOTE_RGB[c3 + 1], NOTE_RGB[c3 + 2], 0.35);
+        sp.disc(x, y, R * 0.012, NOTE_RGB[c3], NOTE_RGB[c3 + 1], NOTE_RGB[c3 + 2], 0.8 * Math.min(1, lv));
+        px = x;
+        py = y;
+      }
+    }
+
+    // ---- voicing stack (inside the ring) and the lead-sheet strip (below it) ----
+    this.stack.update(levels, chord ? chord.root : -1, chord ? chord.quality : '', this.chordEvent, t);
+    this.chordEvent = false;
+    this.stack.draw(sp, t, on.stack);
+    this.history.draw(sp, t, on.history && this.L.view === 'compass', on.predictions);
+
     // ---- pedal indicator (bottom right) ----
     if (this.pedalCell) {
       const pc = this.pedalCell;
@@ -710,8 +810,8 @@ export class Compass {
     const chordOp = chord ? (chord.conf < LOW_CONF ? LOW_CONF_OPACITY : 1) : this.chordName ? 0.35 : 0.6;
     this.chordLayer.opacity = on.chord ? chordOp : 0;
     this.keyLayer.opacity = key && on.key ? 0.6 + 0.4 * Math.min(1, key.conf) : 0;
-    for (let i = 0; i < 3; i++) this.predLayers[i].opacity = on.predictions ? this.predLabelOp[i] : 0;
-    this.thenLayer.opacity = on.predictions ? this.thenOp : 0;
+    for (let i = 0; i < 3; i++) this.predLayers[i].opacity = on.predictions && !turning ? this.predLabelOp[i] : 0;
+    this.thenLayer.opacity = on.predictions && !turning ? this.thenOp : 0;
     const bAge = t - this.badgeT;
     if (this.badge && bAge > BADGE_HOLD + BADGE_FADE) {
       // Clear it, so the next badge doesn't crossfade from a stale one.
@@ -719,13 +819,11 @@ export class Compass {
       this.badgeLayer.changed();
     }
     this.badgeLayer.opacity = on.predictions ? (bAge < BADGE_HOLD ? 1 : clamp01(1 - (bAge - BADGE_HOLD) / BADGE_FADE)) : 0;
-    this.historyLayer.opacity = on.history && this.L.view === 'compass' ? 1 : 0;
     this.chordLayer.update(t);
     this.keyLayer.update(t);
     for (const l of this.predLayers) l.update(t);
     this.thenLayer.update(t);
     this.badgeLayer.update(t);
-    this.historyLayer.update(t);
   }
 
   private drawPredictions(sp: SpriteBatch, t: number): void {
@@ -733,7 +831,6 @@ export class Compass {
     const a = this.a;
     const chord = a?.chord ?? null;
     const orbit = R * ORBIT_R;
-    sp.ring(cx, cy, orbit, Math.max(1, R * 0.003), RING_GREY[0], RING_GREY[1], RING_GREY[2], 0.05);
 
     const fromRoot = chord ? chord.root : this.lastRoot;
     if (fromRoot >= 0 && a && a.predictions.length) {
@@ -747,9 +844,8 @@ export class Compass {
         const c3 = p.root * 3;
         const cr = BRIGHT_RGB[c3], cg = BRIGHT_RGB[c3 + 1], cb = BRIGHT_RGB[c3 + 2];
         const ang = angOf(p.root);
-        // satellite on the orbit
-        sp.disc(cx + Math.cos(ang) * orbit, cy + Math.sin(ang) * orbit, (0.012 + 0.018 * p.p) * R, cr, cg, cb, op);
-        sp.glow(cx + Math.cos(ang) * orbit, cy + Math.sin(ang) * orbit, (0.05 + 0.05 * p.p) * R, cr, cg, cb, op * 0.35);
+        // satellite: hollow, no glow (predicted tier never blooms)
+        sp.ring(cx + Math.cos(ang) * orbit, cy + Math.sin(ang) * orbit, (0.012 + 0.018 * p.p) * R, Math.max(1, R * 0.004), cr, cg, cb, op);
         if (p.root !== fromRoot) {
           this.spiral(sp, from, R * NEEDLE_R, ang, orbit, (0.004 + 0.006 * p.p) * R, cr, cg, cb, op, phase, 1);
         }
@@ -758,7 +854,7 @@ export class Compass {
           const tc = p.then.root * 3;
           const tang = angOf(p.then.root);
           const top = op * THEN_DIM;
-          sp.disc(cx + Math.cos(tang) * orbit, cy + Math.sin(tang) * orbit, (0.008 + 0.012 * p.then.p) * R, BRIGHT_RGB[tc], BRIGHT_RGB[tc + 1], BRIGHT_RGB[tc + 2], top);
+          sp.ring(cx + Math.cos(tang) * orbit, cy + Math.sin(tang) * orbit, (0.008 + 0.012 * p.then.p) * R, Math.max(1, R * 0.003), BRIGHT_RGB[tc], BRIGHT_RGB[tc + 1], BRIGHT_RGB[tc + 2], top);
           this.spiral(sp, ang, orbit, tang, orbit, 0.004 * R, BRIGHT_RGB[tc], BRIGHT_RGB[tc + 1], BRIGHT_RGB[tc + 2], top, (phase + 0.5) % 1, 1);
         }
       }
@@ -873,17 +969,52 @@ export class Compass {
 
   private drawKey(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     if (!this.keyText) return;
-    const compassView = this.L.view === 'compass';
-    ctx.textBaseline = 'middle';
-    ctx.font = `500 ${compassView ? Math.max(12, this.L.R * 0.045) : Math.max(10, this.L.R * 0.085)}px ${MONO_FONT}`;
-    ctx.fillStyle = 'rgba(205,212,232,1)';
-    ctx.letterSpacing = '2px';
-    if (compassView) {
-      ctx.textAlign = 'right';
-      ctx.fillText(this.keyText, w - 2, h / 2);
-    } else {
+    if (this.L.view !== 'compass') {
+      ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
+      ctx.font = `500 ${Math.max(10, this.L.R * 0.085)}px ${MONO_FONT}`;
+      ctx.fillStyle = 'rgba(205,212,232,1)';
+      ctx.letterSpacing = '2px';
       ctx.fillText(this.keyText, w / 2, h / 2);
+      ctx.letterSpacing = '0px';
+      return;
+    }
+    // The hero title: the tonic big, the mode in small caps to its upper right.
+    // An implied key is drawn hollow, with a caption saying so.
+    const R = this.L.R;
+    const size = R * KEY_TITLE_SIZE;
+    const modeSize = Math.max(11, R * 0.055);
+    const tonicFont = `600 ${size}px ${DISPLAY_FONT}`;
+    const modeFont = `500 ${modeSize}px ${MONO_FONT}`;
+    ctx.font = tonicFont;
+    const tw = ctx.measureText(this.keyTonicName).width;
+    ctx.font = modeFont;
+    ctx.letterSpacing = '3px';
+    const mw = ctx.measureText(this.keyModeName).width;
+    const gap = size * 0.12;
+    const x = w / 2 - (tw + gap + mw) / 2;
+    const base = h / 2 + size * 0.36;
+    const color = cssOklch(this.lastKeyTonic, 0.8, 0.08, 1); // under the bloom threshold: structure never blooms
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.letterSpacing = '0px';
+    ctx.font = tonicFont;
+    if (this.keyImplied) {
+      ctx.lineWidth = Math.max(1, size * 0.02);
+      ctx.strokeStyle = color;
+      ctx.strokeText(this.keyTonicName, x, base);
+    } else {
+      ctx.fillStyle = color;
+      ctx.fillText(this.keyTonicName, x, base);
+    }
+    ctx.font = modeFont;
+    ctx.letterSpacing = '3px';
+    ctx.fillStyle = 'rgba(205,212,232,0.85)';
+    ctx.fillText(this.keyModeName, x + tw + gap, base - size * 0.42);
+    if (this.keyImplied) {
+      ctx.font = `500 ${modeSize * 0.75}px ${MONO_FONT}`;
+      ctx.fillStyle = 'rgba(205,212,232,0.55)';
+      ctx.fillText('IMPLIED', x + tw + gap, base - size * 0.42 + modeSize * 1.3);
     }
     ctx.letterSpacing = '0px';
   }
@@ -928,48 +1059,6 @@ export class Compass {
     ctx.letterSpacing = '3px';
     ctx.fillText(this.badge.toUpperCase(), w / 2, h / 2);
     ctx.letterSpacing = '0px';
-  }
-
-  private drawHistory(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    const R = this.L.R;
-    const nameSize = Math.max(16, R * 0.075);
-    const romanSize = Math.max(10, R * 0.035);
-    const gap = nameSize * 0.9;
-    const nameFont = `500 ${nameSize}px ${DISPLAY_FONT}`;
-    const romanFont = `500 ${romanSize}px ${MONO_FONT}`;
-    // Fit as many of the newest as there's room for; oldest on the left.
-    const cols: number[] = [];
-    let total = 0;
-    let first = this.history.length;
-    for (let i = this.history.length - 1; i >= 0; i--) {
-      const e = this.history[i];
-      ctx.font = nameFont;
-      let cw = ctx.measureText(e.name).width;
-      if (e.roman) {
-        ctx.font = romanFont;
-        cw = Math.max(cw, ctx.measureText(e.roman).width);
-      }
-      if (total + cw > w) break;
-      cols.unshift(cw);
-      total += cw + gap;
-      first = i;
-    }
-    ctx.textBaseline = 'top';
-    ctx.textAlign = 'left';
-    let x = 0;
-    for (let i = first; i < this.history.length; i++) {
-      const e = this.history[i];
-      const op = HISTORY_OPACITY[this.history.length - 1 - i] ?? 0.15;
-      ctx.font = nameFont;
-      ctx.fillStyle = `rgba(232,236,246,${op})`;
-      ctx.fillText(e.name, x, 2);
-      if (e.roman) {
-        ctx.font = romanFont;
-        ctx.fillStyle = cssOklch(e.root, 0.82, 0.08, op);
-        ctx.fillText(e.roman, x, 4 + nameSize * 1.1);
-      }
-      x += cols[i - first] + gap;
-    }
   }
 }
 

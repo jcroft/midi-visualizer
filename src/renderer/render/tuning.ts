@@ -132,9 +132,35 @@ export const COMET_FADE = 0.3;
 /** Landing badge ("ii–V–I"): hold, then fade. */
 export const BADGE_HOLD = 1.4;
 export const BADGE_FADE = 0.5;
-/** Chord history (lead-sheet line) in compass view. */
-export const HISTORY_LEN = 6;
-export const HISTORY_OPACITY = [0.9, 0.6, 0.45, 0.32, 0.22, 0.15];
+/** Lead-sheet strip (compass view): scroll speed (R per second), edge fade curve, entries kept. */
+export const HISTORY_SPEED_R = 0.16;
+export const HISTORY_FADE_POW = 1.3;
+export const HISTORY_MAX = 32;
+
+// ---------- the Stack (voicing ladder inside the ring) ----------
+/** Column from cy + BOTTOM*R to cy + TOP*R (y-up), 0.013 R per semitone (a 46-semitone window). */
+export const STACK_TOP_R = 0.64;
+export const STACK_BOTTOM_R = 0.12;
+export const STACK_SEMI_R = 0.024;
+/** Smallest semitone step, for wide two-hand voicings. */
+export const STACK_SEMI_MIN_R = 0.01;
+/** Voice leading on a chord change: ghost slide, line growth, and how long it all lingers. */
+export const STACK_SLIDE = 0.25;
+export const STACK_LINE_GROW = 0.3;
+export const STACK_GHOST_FADE = 2;
+
+// ---------- key title (compass view) ----------
+/** Center of the key title above the ring, and its size, as multiples of R. */
+export const KEY_TITLE_R = 1.52;
+export const KEY_TITLE_SIZE = 0.26;
+
+// ---------- tonic-up wheel and harmonic weather ----------
+/** Tonic-up: how fast the wheel turns to put a confirmed tonic at 12 o'clock (rad/s natural frequency). */
+export const WHEEL_OMEGA = 3;
+/** A big soft glow behind the compass, tinted by the current chord's function. */
+export const WEATHER_R = 3.2;
+export const WEATHER_ALPHA = 0.05;
+export const WEATHER_TAU = 1.2;
 
 // ---------- text ----------
 export const DISPLAY_FONT = '"SF Pro Display", -apple-system, "Helvetica Neue", Inter, Arial, sans-serif';

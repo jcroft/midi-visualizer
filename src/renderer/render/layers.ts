@@ -1,5 +1,5 @@
 // Compass layers that can be switched on and off from the Layers menu.
-// Everything is on by default.
+// Everything is on by default except the experiments in OFF_BY_DEFAULT.
 
 export const LAYERS = [
   { id: 'notes', label: 'Notes', title: 'Pitch-class dots and names on the ring' },
@@ -9,12 +9,19 @@ export const LAYERS = [
   { id: 'key', label: 'Key', title: 'Key arc around the ring and the key name' },
   { id: 'chord', label: 'Chord name', title: 'Chord symbol and roman numeral in the center' },
   { id: 'predictions', label: 'Predictions', title: 'Likely next chords on the orbit outside the ring' },
-  { id: 'history', label: 'Chord history', title: 'Lead-sheet line of recent chords (bottom left)' },
+  { id: 'history', label: 'Lead sheet', title: 'Scrolling strip of past, current and predicted chords along the bottom' },
+  { id: 'stack', label: 'Voicing stack', title: 'Your voicing as a ladder: each note by pitch, colored by its role, with voice leading' },
+  { id: 'register', label: 'Register web', title: 'Each sounding note on its spoke at a radius by octave (low near the center)' },
+  { id: 'weather', label: 'Harmonic weather', title: 'A soft glow behind the compass: cool on tonic, warm on dominant' },
+  { id: 'tonicUp', label: 'Tonic at top', title: 'Turn the wheel so the key’s tonic sits at 12 o’clock' },
 ] as const;
+
+/** Layers that start off (the rest start on). */
+const OFF_BY_DEFAULT: readonly string[] = ['register', 'tonicUp'];
 
 export type LayerId = (typeof LAYERS)[number]['id'];
 export type Layers = Record<LayerId, boolean>;
 
-export function allLayersOn(): Layers {
-  return Object.fromEntries(LAYERS.map((l) => [l.id, true])) as Layers;
+export function defaultLayers(): Layers {
+  return Object.fromEntries(LAYERS.map((l) => [l.id, !OFF_BY_DEFAULT.includes(l.id)])) as Layers;
 }
