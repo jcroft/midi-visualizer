@@ -5,3 +5,4 @@ release/
 *.log
 .DS_Store
 bench-results/
+tools/bench/metal-baseline/MetalBaseline
