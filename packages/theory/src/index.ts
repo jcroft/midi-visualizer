@@ -4,3 +4,4 @@ export { TEMPLATES, qualityText, scoreAll, makeCands, type Cand, type Template }
 export { GlobalKey, KeyTracker, roman, diatonic } from './key';
 export { predict, type ChordEvent } from './predict';
 export { spell, keyLabel, mod12, type Mode, type KeyLike } from './pitch';
+export { analyzeVoicing, voiceFunction, voiceLeading, type Voice, type VoicingReading, type VoicingType, type FnClass, type VoiceMove } from './voicing';

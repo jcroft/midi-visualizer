@@ -145,6 +145,15 @@ export class TextLayer {
     this.cy = cy;
   }
 
+  /** Move the text that is showing now (and anything painted next) without a crossfade. */
+  moveTo(cx: number, cy: number): void {
+    this.cx = cx;
+    this.cy = cy;
+    const s = this.slots[this.cur];
+    s.x = cx;
+    s.y = cy;
+  }
+
   /** Position (center, CSS px, y-up) and size. Re-allocates canvases only when the size changes. */
   place(cx: number, cy: number, w: number, h: number, dpr: number): void {
     this.cx = cx;

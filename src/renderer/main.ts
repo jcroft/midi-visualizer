@@ -9,7 +9,7 @@ import { attachQwerty } from './midi/qwerty';
 import { Replayer } from './midi/replay';
 import { Recorder } from './midi/recorder';
 import { createVisualizer, type LayerId, type Layers, type View, type VisualMode } from './render/visualizer';
-import { allLayersOn } from './render/layers';
+import { defaultLayers } from './render/layers';
 import { FrameStats, LatencyProbe } from './bench/stats';
 import { Hud } from './bench/hud';
 import { buildChrome } from './ui/chrome';
@@ -65,7 +65,7 @@ async function boot(): Promise<void> {
 
   // Compass layers, all on unless you've turned some off.
   const LAYERS_KEY = 'layers';
-  const layers: Layers = allLayersOn();
+  const layers: Layers = defaultLayers();
   try {
     const saved = JSON.parse(localStorage.getItem(LAYERS_KEY) ?? '{}') as Partial<Layers>;
     for (const id of Object.keys(layers) as LayerId[]) if (typeof saved[id] === 'boolean') layers[id] = saved[id]!;
