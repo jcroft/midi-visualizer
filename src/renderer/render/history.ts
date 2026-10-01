@@ -5,13 +5,17 @@
 // Tiers (see compass.ts): past entries are HEARD (grey, no glow), the current
 // chord is PLAYED (white), the future is PREDICTED (outline, dotted underline).
 import type { Scene } from 'three/webgpu';
-import type { Fn } from '@shared/analysis';
+import type { Fn, Reread } from '@shared/analysis';
+import { chordTones, resolveVoice, voiceLeading, type FnClass, type VoicingReading } from '@theory/voicing';
 import { cssOklch } from './color';
 import type { Layout } from './layout';
 import type { SpriteBatch } from './sprites';
 import { TextLayer } from './text';
 import { DISPLAY_FONT, HISTORY_FADE_POW, HISTORY_MAX, HISTORY_SPEED_R, MONO_FONT } from './tuning';
-import { fnRgb } from './taxonomy';
+import { ROLE_RGB, fnRgb } from './taxonomy';
+
+/** At most this many voices (lowest first: the left hand) get a hidden-voice line. */
+const VOICE_CAP = 5;
 
 interface Entry {
   name: string;
@@ -29,12 +33,19 @@ interface Entry {
   /** Laid-out left/right edges this frame (CSS px). */
   x0: number;
   x1: number;
+  /** The name it had before hindsight reread it ("B°7"), and its numeral in the old key at a pivot. */
+  was: string;
+  pivot: string;
+  /** Hidden voices: the voicing's lowest notes, low to high, and each one's role. */
+  voices: number[];
+  roles: FnClass[];
 }
 
 interface Future {
   name: string;
   roman: string;
   root: number;
+  q: string;
 }
 
 export class HistoryStrip {
@@ -50,6 +61,12 @@ export class HistoryStrip {
   private H = 60;
   private W = 300;
   private y = 60;
+  /** The Hidden voices layer: lines under the strip, one per voice. */
+  voicesOn = true;
+  private bandH = 0;
+  private bandLo = 48;
+  private bandHi = 72;
+  private voiceKey = '';
 
   constructor(
     private readonly scene: Scene,
@@ -66,8 +83,9 @@ export class HistoryStrip {
     this.romanSize = Math.max(10, R * 0.032);
     this.H = Math.ceil(this.romanSize * 1.2 + this.nameSize * 1.15 + this.romanSize * 1.5 + 8);
     this.W = Math.ceil(R * 1.0);
-    // Clear of the button row (which fades out while playing).
-    this.y = Math.max(this.H / 2 + 64, h * 0.045 + this.H / 2);
+    // Clear of the button row (which fades out while playing), with room under it for the hidden voices.
+    this.bandH = this.voicesOn ? Math.max(28, R * 0.16) : 0;
+    this.y = Math.max(this.H / 2 + 64, h * 0.045 + this.H / 2) + this.bandH;
     for (const e of this.entries) {
       e.layer.place(0, this.y, this.W, this.H, dpr);
       e.w = this.nameWidth(e.name, e.roman);
@@ -106,7 +124,7 @@ export class HistoryStrip {
         void idx;
       }
     }
-    const e: Entry = { name, roman, root, fn, keyChange, t0: t, t1: NaN, w: this.nameWidth(name, roman), layer, x0: 0, x1: 0 };
+    const e: Entry = { name, roman, root, fn, keyChange, t0: t, t1: NaN, w: this.nameWidth(name, roman), layer, x0: 0, x1: 0, was: '', pivot: '', voices: [], roles: [] };
     this.entries.push(e);
     layer.changed();
   }
@@ -120,6 +138,35 @@ export class HistoryStrip {
     cur.root = root;
     cur.w = this.nameWidth(name, roman);
     cur.layer.changed();
+  }
+
+  /**
+   * Hindsight on the newest entry, from the chord event that follows it:
+   * a new name (the old one shown small above it) and/or its numeral in the new key.
+   */
+  reread(r: Reread): void {
+    const e = this.entries[this.entries.length - 1];
+    if (!e) return;
+    if (r.name && r.name !== e.name) {
+      e.was = e.name;
+      e.name = r.name;
+    }
+    if (r.pivot && r.pivot !== r.roman) e.pivot = r.pivot;
+    if (r.roman) e.roman = r.roman;
+    e.w = this.nameWidth(e.name, e.pivot ? `${e.pivot} → ${e.roman}` : e.roman);
+    e.layer.changed();
+  }
+
+  /** The voicing now sounding, for the current entry's hidden-voice lines. */
+  setVoices(r: VoicingReading | null): void {
+    const cur = this.entries[this.entries.length - 1];
+    if (!cur || !Number.isNaN(cur.t1) || !r || r.voices.length < 2) return;
+    const vs = r.voices.slice(0, VOICE_CAP);
+    const key = vs.map((v) => v.note).join(',');
+    if (key === this.voiceKey && cur.voices.length) return;
+    this.voiceKey = key;
+    cur.voices = vs.map((v) => v.note);
+    cur.roles = vs.map((v) => v.cls);
   }
 
   /** Silence: the current chord ends. */
@@ -139,7 +186,7 @@ export class HistoryStrip {
     }
   }
 
-  draw(sp: SpriteBatch, t: number, visible: boolean, showFuture: boolean): void {
+  draw(sp: SpriteBatch, t: number, visible: boolean, showFuture: boolean, voices = false): void {
     const { cx } = this.L;
     const v = HISTORY_SPEED_R * this.L.R;
     const gap = this.nameSize * 0.9;
@@ -186,6 +233,8 @@ export class HistoryStrip {
       if (e.keyChange) sp.rect(bx0 - 9, this.y, 0.5, this.H * 0.32, 0.6, 0.64, 0.78, op * 0.35);
     }
 
+    if (visible && voices && this.voicesOn) this.drawVoices(sp, t, gap, showFuture);
+
     // The future, right of now: outline names with dotted underlines.
     let fx = cx + gap;
     for (let i = 0; i < 2; i++) {
@@ -204,6 +253,92 @@ export class HistoryStrip {
     }
   }
 
+  /**
+   * Hidden voices: under the strip, one line per voice of each voicing, at its
+   * pitch. Past lines are heard (grey, tinted by role), the current one is
+   * played (its role color: guide tones gold), joined chord to chord by how
+   * each voice moved; from now, each line continues dotted to where it would go
+   * in the predicted chord.
+   */
+  private drawVoices(sp: SpriteBatch, t: number, gap: number, showFuture: boolean): void {
+    const { cx, R } = this.L;
+    const top = this.y - this.H / 2 - 4;
+    const bot = top - this.bandH + 6;
+    const span = cx - 24;
+    // The band's pitch range follows the visible voices, smoothly.
+    let lo = 200, hi = -1;
+    for (const e of this.entries) for (const n of e.voices) {
+      if (e.x1 < 24) continue;
+      lo = Math.min(lo, n);
+      hi = Math.max(hi, n);
+    }
+    if (hi < 0) return;
+    if (hi - lo < 10) {
+      const m = (hi + lo) / 2;
+      lo = m - 5;
+      hi = m + 5;
+    }
+    const k = 0.08;
+    this.bandLo += (lo - 1 - this.bandLo) * k;
+    this.bandHi += (hi + 1 - this.bandHi) * k;
+    const yOf = (n: number) => bot + ((n - this.bandLo) / Math.max(1, this.bandHi - this.bandLo)) * (top - bot);
+    const thick = Math.max(1, R * 0.0035);
+    const grey = [0.55, 0.58, 0.68];
+
+    for (let i = 0; i < this.entries.length; i++) {
+      const e = this.entries[i];
+      if (!e.voices.length) continue;
+      const cur = Number.isNaN(e.t1);
+      const fade = cur ? 1 : 0.85 * Math.pow(Math.max(0, 1 - (cx - e.x0) / span), 1.2);
+      if (fade < 0.02) continue;
+      const xa = e.x0;
+      const xb = Math.max(xa + 4, e.x1 - gap * 0.4);
+      for (let j = 0; j < e.voices.length; j++) {
+        const c = ROLE_RGB[e.roles[j]];
+        const tint = cur ? 1 : 0.35;
+        const r = c[0] * tint + grey[0] * (1 - tint), g = c[1] * tint + grey[1] * (1 - tint), b = c[2] * tint + grey[2] * (1 - tint);
+        const y = yOf(e.voices[j]);
+        sp.line(xa, y, xb, y, thick * (e.roles[j] === 'guide' ? 1.4 : 1), r, g, b, (cur ? 0.85 : 0.5) * fade);
+      }
+      // Join to the next voicing, voice by voice.
+      const n = this.entries[i + 1];
+      if (!n || !n.voices.length || n.x0 - xb > gap * 4) continue;
+      for (const m of voiceLeading(e.voices, n.voices)) {
+        if (m.from === null || m.to === null) continue;
+        const fromRole = e.roles[e.voices.indexOf(m.from)];
+        const toRole = n.roles[n.voices.indexOf(m.to)];
+        const step = Math.abs(m.to - m.from);
+        const gold = fromRole === 'guide' && toRole === 'guide' && step > 0 && step <= 2;
+        const c = gold ? ROLE_RGB.guide : grey;
+        sp.line(xb, yOf(m.from), n.x0, yOf(m.to), thick * (gold ? 1.4 : 1), c[0], c[1], c[2], (gold ? 0.75 : 0.4) * fade);
+      }
+    }
+
+    // From now into the predicted chord: dotted, where each voice would go.
+    const last = this.entries[this.entries.length - 1];
+    const f = this.future[0];
+    if (!showFuture || !last || !Number.isNaN(last.t1) || !last.voices.length || !f) return;
+    const tones = chordTones(f.root, f.q);
+    const x0 = Math.max(last.x0 + 4, last.x1 - gap * 0.4);
+    const x1 = cx + gap + this.futureW[0];
+    const op = this.futureLayers[0].opacity;
+    if (op < 0.02) return;
+    for (let j = 0; j < last.voices.length; j++) {
+      const from = last.voices[j];
+      const d = resolveVoice(from, tones);
+      const to = from + (d ?? 0);
+      const c = d !== null && d !== 0 && last.roles[j] === 'guide' ? ROLE_RGB.guide : grey;
+      const y0 = yOf(from), y1 = yOf(to);
+      const len = x1 - x0;
+      for (let x = 4; x < len; x += 6) {
+        const u = x / len;
+        const e = Math.min(1, u * 3);
+        sp.disc(x0 + x, y0 + (y1 - y0) * e, 1, c[0], c[1], c[2], 0.6 * op * (d === null ? 0.4 : 1));
+      }
+    }
+    void t;
+  }
+
   private nameWidth(name: string, roman: string): number {
     this.measure.font = `500 ${this.nameSize}px ${DISPLAY_FONT}`;
     let w = this.measure.measureText(name).width;
@@ -219,12 +354,20 @@ export class HistoryStrip {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     let y = 2;
+    let tx = 0;
     if (e.keyChange) {
       ctx.font = `600 ${this.romanSize}px ${MONO_FONT}`;
       ctx.letterSpacing = '2px';
       ctx.fillStyle = 'rgba(200,206,225,0.8)';
       ctx.fillText(e.keyChange.toUpperCase(), 0, y);
+      tx = ctx.measureText(e.keyChange.toUpperCase()).width + 8;
       ctx.letterSpacing = '0px';
+    }
+    if (e.was) {
+      // Reread in hindsight: the old reading, small, with an arrow to the name below.
+      ctx.font = `500 ${this.romanSize}px ${MONO_FONT}`;
+      ctx.fillStyle = 'rgba(170,176,192,0.75)';
+      ctx.fillText(`${e.was} ↘`, tx, y);
     }
     y += this.romanSize * 1.2;
     ctx.font = `${cur ? 600 : 500} ${this.nameSize}px ${DISPLAY_FONT}`;
@@ -233,8 +376,16 @@ export class HistoryStrip {
     y += this.nameSize * 1.15;
     if (e.roman) {
       ctx.font = `500 ${this.romanSize}px ${MONO_FONT}`;
+      let x = 0;
+      if (e.pivot) {
+        // A pivot: its numeral in the old key, then in the new one.
+        ctx.fillStyle = 'rgba(170,176,192,0.75)';
+        const s = `${e.pivot} → `;
+        ctx.fillText(s, 0, y);
+        x = ctx.measureText(s).width;
+      }
       ctx.fillStyle = cssOklch(e.root, 0.72, 0.06, 1);
-      ctx.fillText(e.roman, 0, y);
+      ctx.fillText(e.roman, x, y);
     }
     void h;
   }

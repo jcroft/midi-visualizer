@@ -14,7 +14,7 @@ import { Color, OrthographicCamera, RenderPipeline, Scene, WebGPURenderer } from
 import { float, pass, screenUV, smoothstep, vec4 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { BAND_RGB, NOTE_RGB } from './color';
-import { Compass } from './compass';
+import { Compass, type Touch } from './compass';
 import { Layout, type View } from './layout';
 import type { Layers } from './layers';
 import { Particles } from './particles';
@@ -102,6 +102,8 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
   let sawNoteOn = false;
   const instant = new Float32Array(12);
   const noteLvl = new Float32Array(128);
+  // Touch: per pitch class, how much is under the fingers vs. held only by the pedal; per note, the strike velocity.
+  const touch: Touch = { held: new Float32Array(12), pedalOnly: new Float32Array(12), vel: new Float32Array(128), pedal: 0, soft: 0 };
 
   // Chord bands in the river (ring buffer, preallocated).
   const bandRoot = new Int8Array(BAND_CAP).fill(-1);
@@ -124,12 +126,14 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
         break;
       case 'cc':
         if (ev.cc === 64) river.sustain(ev.value, t);
+        else if (ev.cc === 67) touch.soft = ev.value;
         break;
       case 'pat':
         river.aftertouch(ev.note, ev.value);
         break;
       case 'panic':
         river.panic(t);
+        touch.soft = 0;
         break;
     }
   }
@@ -192,9 +196,16 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
   function computeInstant(t: number): void {
     instant.fill(0);
     noteLvl.fill(0);
+    touch.held.fill(0);
+    touch.pedalOnly.fill(0);
+    touch.pedal = river.pedal;
     for (let n = LOWEST_NOTE; n < LOWEST_NOTE + KEY_COUNT; n++) {
       const lvl = river.level(n, t);
+      touch.vel[n] = lvl > 0.02 ? river.velocity(n) : 0;
       if (lvl <= 0.02) continue;
+      const lv1 = Math.min(1, lvl);
+      if (river.held[n]) touch.held[n % 12] = Math.max(touch.held[n % 12], lv1);
+      else if (river.sustained[n]) touch.pedalOnly[n % 12] = Math.max(touch.pedalOnly[n % 12], lv1);
       // The hand shape: held keys count fully, pedal-sustained ones only while fresh, release tails not at all.
       noteLvl[n] = river.held[n] ? lvl : river.sustained[n] ? lvl * 0.5 : 0;
       const pc = n % 12;
@@ -304,7 +315,7 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
       computeInstant(t);
       if (view === 'river') drawRiverDecor(t);
       over.begin();
-      compass.draw(over, t, dt, instant, noteLvl, river.pedalDown);
+      compass.draw(over, t, dt, instant, noteLvl, river.pedalDown, touch);
       over.end();
       pipeline.render();
     },

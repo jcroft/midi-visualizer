@@ -33,6 +33,8 @@ export interface KeyReading {
   conf: number;
   /** Set when a ii–V points somewhere the music hasn't landed yet. */
   implied: boolean;
+  /** For a modal frame, where it sits in its parent major: "ii of C" (D dorian), "V of F" (C mixolydian). */
+  parent?: string;
 }
 
 /** Harmonic function: tonic, subdominant, dominant. */
@@ -83,6 +85,20 @@ export interface Landing {
   fn: Fn | null;
 }
 
+/** Hindsight on the previous chord, carried by the next chord event. */
+export interface Reread {
+  /** New name when the chord was reread (B°7 → G7(♭9)); null when only the numeral changes. */
+  name: string | null;
+  /** The name it had. */
+  was: string | null;
+  /** "rootless 7♭9", "rootless ii", "pivot", "new key". */
+  why: string;
+  /** Its numeral in the key now in force. */
+  roman: string | null;
+  /** At a key change, its numeral in the old key when it belongs to both (the pivot chord). */
+  pivot: string | null;
+}
+
 export interface Analysis {
   type: 'analysis';
   t: number; // snapshot time this answers
@@ -95,6 +111,8 @@ export interface Analysis {
   predictions: Prediction[]; // at most 3
   /** Set only on the analysis that carries a new chord event. */
   landing: Landing | null;
+  /** Set only on a new chord event: what that event says about the chord before it. */
+  reread: Reread | null;
   /** True when this analysis is a new chord event (not a refinement). */
   changed: boolean;
 }

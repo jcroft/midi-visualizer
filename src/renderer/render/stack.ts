@@ -9,6 +9,7 @@ import { analyzeVoicing, voiceLeading, type VoiceMove, type VoicingReading } fro
 import { BRIGHT_RGB, cssOklch } from './color';
 import type { Layout } from './layout';
 import type { SpriteBatch } from './sprites';
+import type { Touch } from './compass';
 import { TextLayer } from './text';
 import { ROLE_CSS, ROLE_RGB } from './taxonomy';
 import { DISPLAY_FONT, MONO_FONT, STACK_BOTTOM_R, STACK_SEMI_MIN_R, STACK_SEMI_R, STACK_TOP_R, STACK_GHOST_FADE, STACK_LINE_GROW, STACK_SLIDE } from './tuning';
@@ -43,6 +44,11 @@ export class Stack {
   ) {
     this.labels = new TextLayer(scene, 62, (ctx, w, h) => this.drawLabels(ctx, w, h), { out: 0.1, outRise: 0, in: 0.1, inRise: 0, delay: 0 });
     this.moveLayer = new TextLayer(scene, 62, (ctx, w, h) => this.drawMoves(ctx, w, h), { out: 0.3, outRise: 0, in: 0.2, inRise: 0, delay: 0.15 });
+  }
+
+  /** The voicing as read now (null without a chord). */
+  get current(): VoicingReading | null {
+    return this.reading;
   }
 
   layout(): void {
@@ -139,7 +145,12 @@ export class Stack {
     return Math.min(this.L.R * 0.018, this.semi * 0.8);
   }
 
-  draw(sp: SpriteBatch, t: number, on: boolean): void {
+  /**
+   * `touch` (the Pedal & touch layer) sizes and brightens each disc by how hard
+   * it was struck, marks a top voice quieter than the voices under it, wets the
+   * stack with the pedal depth, and cools it under the soft pedal.
+   */
+  draw(sp: SpriteBatch, t: number, on: boolean, touch: Touch | null = null): void {
     const { cx, R } = this.L;
     const opacity = on ? 1 : 0;
     this.labels.opacity = opacity;
@@ -219,28 +230,51 @@ export class Stack {
       }
     }
 
+    // Balance: is the top voice (the melody, when two hands play) quieter than the voices under it?
+    const nv = r.voices.length;
+    let innerVel = 0;
+    if (touch && nv >= 3) for (let i = 1; i < nv - 1; i++) innerVel = Math.max(innerVel, touch.vel[r.voices[i].note]);
+    const topQuiet = !!touch && nv >= 3 && touch.vel[r.voices[nv - 1].note] < innerVel - 0.08;
+    const cool = touch ? touch.soft : 0;
+    const wet = touch ? touch.pedal : 0;
+
     // The voices.
     let prevY = -1e9;
     let side = 1;
-    for (const v of r.voices) {
+    for (let i = 0; i < nv; i++) {
+      const v = r.voices[i];
       const y = this.yOf(v.note, this.center);
       if (y < bot - 4 || y > top + 4) continue;
       // Seconds sit side by side, like on a staff.
       side = y - prevY < this.semi * 2.5 ? -side : 1;
       const x = cx + (side < 0 ? this.rad() * 2.2 : 0);
       prevY = y;
-      const rad = this.rad() * (v.hand === 'L' ? 1.15 : 1);
+      const vel = touch ? touch.vel[v.note] : 1;
+      const rad = this.rad() * (v.hand === 'L' ? 1.15 : 1) * (touch ? 0.7 + 0.5 * vel : 1);
+      const op = touch ? (0.5 + 0.5 * vel) * (1 - 0.25 * cool) : 1;
+      let cr: number, cg: number, cb: number;
       if (v.cls === 'root') {
         const r3 = v.pc * 3;
-        sp.disc(x, y, rad, BRIGHT_RGB[r3], BRIGHT_RGB[r3 + 1], BRIGHT_RGB[r3 + 2], 1);
-      } else if (v.cls === 'outside') {
-        const c = ROLE_RGB.outside;
-        sp.ring(x, y, rad * 0.85, Math.max(1, R * 0.0025), c[0], c[1], c[2], 0.9);
+        [cr, cg, cb] = [BRIGHT_RGB[r3], BRIGHT_RGB[r3 + 1], BRIGHT_RGB[r3 + 2]];
       } else {
         const c = ROLE_RGB[v.cls];
-        sp.disc(x, y, rad, c[0], c[1], c[2], 1);
-        if (v.cls === 'guide') sp.glow(x, y, rad * 3, c[0], c[1], c[2], 0.35);
+        [cr, cg, cb] = [c[0], c[1], c[2]];
       }
+      if (cool > 0) {
+        // the soft pedal cools: toward a quiet blue
+        const k = 0.4 * cool;
+        cr += (0.35 - cr) * k;
+        cg += (0.45 - cg) * k;
+        cb += (0.8 - cb) * k;
+      }
+      if (wet > 0.05) sp.glow(x, y, rad * (2.5 + 2.5 * wet), cr, cg, cb, 0.14 * wet * op);
+      if (v.cls === 'outside') {
+        sp.ring(x, y, rad * 0.85, Math.max(1, R * 0.0025), cr, cg, cb, 0.9 * op);
+      } else {
+        sp.disc(x, y, rad, cr, cg, cb, op);
+        if (v.cls === 'guide') sp.glow(x, y, rad * 3, cr, cg, cb, 0.35 * op);
+      }
+      if (topQuiet && i === nv - 1) sp.line(x - rad * 1.6, y - rad * 1.9, x + rad * 1.6, y - rad * 1.9, Math.max(1, R * 0.002), 0.85, 0.88, 0.96, 0.45);
     }
   }
 

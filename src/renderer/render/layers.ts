@@ -12,6 +12,9 @@ export const LAYERS = [
   { id: 'history', label: 'Lead sheet', title: 'Scrolling strip of past, current and predicted chords along the bottom' },
   { id: 'stack', label: 'Voicing stack', title: 'Your voicing as a ladder: each note by pitch, colored by its role, with voice leading' },
   { id: 'register', label: 'Register web', title: 'Each sounding note on its spoke at a radius by octave (low near the center)' },
+  { id: 'touch', label: 'Pedal & touch', title: 'Pedal-held notes go hazy and clear when the dampers drop; the stack shows how hard each note was struck' },
+  { id: 'tendency', label: 'Tendency tails', title: 'Dotted tails on the ring where each guide tone or tension wants to move in the predicted chord' },
+  { id: 'voices', label: 'Hidden voices', title: 'A line for each voice of your voicing under the lead sheet, dotted into the predicted chord' },
   { id: 'weather', label: 'Harmonic weather', title: 'A soft glow behind the compass: cool on tonic, warm on dominant' },
   { id: 'tonicUp', label: 'Tonic at top', title: 'Turn the wheel so the key’s tonic sits at 12 o’clock' },
 ] as const;
