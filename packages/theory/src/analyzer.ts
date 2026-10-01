@@ -1,6 +1,6 @@
 // Stateful analyzer: PianoSnapshot -> Analysis. Pure TypeScript; time only
 // arrives through snapshot.t, so it is deterministic and testable.
-import type { Analysis, ChordReading, KeyReading, Landing, PianoSnapshot, Prediction } from '../../../src/shared/analysis';
+import type { Analysis, ChordReading, KeyReading, Landing, PianoSnapshot, Prediction, Reread } from '../../../src/shared/analysis';
 import {
   type Cand,
   NQ,
@@ -17,7 +17,7 @@ import {
 } from './chords';
 import { KeyTracker, diatonic, roman } from './key';
 import { mod12, keyLabel, parentMajor, spell, type KeyLike, type Mode } from './pitch';
-import { type ChordEvent, landingFor, predict } from './predict';
+import { type ChordEvent, fitsVamp, landingFor, parentKey, predict } from './predict';
 
 // ---- tuning ---------------------------------------------------------------
 const ARM_MS = 250; // a trigger (3+ onsets / new bass / pedal re-catch) arms a change for this long
@@ -33,6 +33,7 @@ const LOCAL_KEY_TTL = 16000;
 const LOCAL_MISS_IMPLIED = 2; // an unresolved ii–V's key lapses after this many unrelated chords
 const LOCAL_MISS = 3;
 const MODAL_MS = 4000;
+const MODAL_SHIFT_MS = 8000; // a chord inside a vamp becomes the new modal center only after this long
 const CONF_K = 1.4;
 const YOUNG_MS = 150;
 
@@ -98,6 +99,14 @@ class AnalyzerImpl implements Analyzer {
   private predictions: Prediction[] = [];
   private landing: Landing | null = null;
   private last: Analysis | null = null;
+  /** A modal vamp in force (D dorian on a held D–7); it lasts while the chords stay inside the vamp. */
+  private modal: KeyLike | null = null;
+  /** The frame the current predictions were figured in ("" = the functional context key). */
+  private predFrame = '';
+  /** The reading and bass note of the last chord event, for rereading it in hindsight. */
+  private lastReading: Reading | null = null;
+  private lastEventBass = -1;
+  private reread: Reread | null = null;
 
   reset(): void {
     this.pool.fill(0);
@@ -122,10 +131,24 @@ class AnalyzerImpl implements Analyzer {
     this.predictions = [];
     this.landing = null;
     this.last = null;
+    this.modal = null;
+    this.predFrame = '';
+    this.lastReading = null;
+    this.lastEventBass = -1;
+    this.reread = null;
   }
 
   wantsTick(): boolean {
-    return this.pendName !== null;
+    return this.pendName !== null || this.modalPending();
+  }
+
+  /** A held m7 or dominant may still become a modal center (D dorian) once it has sounded long enough. */
+  private modalPending(): boolean {
+    const cur = this.cur;
+    if (!cur || cur.qi < 0 || !(cur.q === 'm7' || cur.q === 'min' || isDom(cur.q))) return false;
+    if (this.modal && this.modal.tonic === cur.root) return false;
+    const wait = this.modal && fitsVamp(this.modal, cur) ? MODAL_SHIFT_MS : MODAL_MS;
+    return this.lastT - this.curSince <= wait + 100;
   }
 
   update(s: PianoSnapshot): Analysis | null {
@@ -420,9 +443,15 @@ class AnalyzerImpl implements Analyzer {
   }
 
   private onChordEvent(ev: ChordEvent, r: Reading, t: number): void {
+    const keyBefore = this.contextKey();
+    const frameBefore = this.modal ?? keyBefore;
+    // Hindsight: the new chord can settle what the last one really was.
+    const rr = this.rereadPrev(ev, keyBefore);
     const prev = this.lastEvent;
     this.prevEvent = prev;
     this.lastEvent = ev;
+    this.lastReading = r;
+    this.lastEventBass = this.lastBassNote;
     this.history.push(ev);
     if (this.history.length > 6) this.history.shift();
     if (r.qi >= 0) this.gkey.addChord(ev.root, TEMPLATES[r.qi].guides, t);
@@ -433,8 +462,71 @@ class AnalyzerImpl implements Analyzer {
       const g = this.gkey.estimate();
       if (this.local && g && this.local.tonic !== g.tonic && t - this.local.t > 1000) this.local = null;
     }
-    this.landing = prev && this.predictions.length ? landingFor(this.predictions, prev, ev, this.contextKey(), this.history) : null;
-    this.predictions = r.qi >= 0 ? predict(ev, this.contextKey(), this.history) : [];
+    // A vamp holds its modal frame only while the chords stay inside it.
+    if (this.modal && !fitsVamp(this.modal, ev)) this.modal = null;
+    const frame = this.modal ?? this.contextKey();
+    // only a key this chord just established (a ii–V, a V–I) rewrites the numeral before it
+    const keyNow = this.local && this.local.t === t ? this.local : null;
+    this.reread = prev ? this.pivotOf(prev, rr, keyBefore, keyNow) : null;
+    this.landing = prev && this.predictions.length ? landingFor(this.predictions, prev, ev, frameBefore, this.history) : null;
+    this.predictions = r.qi >= 0 ? predict(ev, frame, this.history) : [];
+    this.predFrame = this.modal ? frameId(this.modal) : '';
+  }
+
+  /**
+   * Reread the previous chord now that the next one has arrived:
+   * a diminished seventh that resolves like a dominant is a rootless 7♭9
+   * (C♯°7 → D–7 is A7♭9 → D–7), and FΔ7 voiced high going to G7 is D–9 (a rootless ii).
+   * Rewrites the history so the ii–V and key logic see the better reading.
+   */
+  private rereadPrev(ev: ChordEvent, key: KeyLike | null): { was: string; name: string; why: string } | null {
+    const prev = this.lastEvent;
+    const pr = this.lastReading;
+    if (!prev || !pr || pr.qi < 0) return null;
+    let next: ChordEvent | null = null;
+    let rel = 0;
+    let why = '';
+    if (prev.q === 'dim7' && fam(ev.q) !== 'dim' && fam(ev.q) !== 'other') {
+      const dom = mod12(ev.root + 7);
+      // the four notes of the °7 are the 3, 5, ♭7 and ♭9 of the dominant
+      if (mod12(dom + 1 - prev.root) % 3 === 0) {
+        next = { root: dom, q: '7' };
+        rel = (1 << 4) | (1 << 7) | (1 << 10) | (1 << 1);
+        why = 'rootless 7♭9';
+      }
+    } else if (prev.q === 'maj7' && isDom(ev.q) && mod12(ev.root - prev.root) === 2) {
+      // a real bass on the root keeps IV → V (FΔ7 → G7 over a low F)
+      const deepRoot = this.lastEventBass >= 0 && this.lastEventBass < 48 && this.lastEventBass % 12 === prev.root;
+      if (!deepRoot) {
+        next = { root: mod12(prev.root - 3), q: 'm7' };
+        rel = (1 << 3) | (1 << 7) | (1 << 10) | (1 << 2);
+        why = 'rootless ii';
+      }
+    }
+    if (!next) return null;
+    const was = this.nameOf(pr, key);
+    const nr: Reading = { root: next.root, qi: QINDEX_OF(next.q), q: next.q, rootInferred: true, bass: pr.bass, slash: null, rel };
+    this.lastEvent = next;
+    this.lastReading = nr;
+    this.history[this.history.length - 1] = next;
+    return { was, name: this.nameOf(nr, key), why };
+  }
+
+  /**
+   * The previous chord's lead-sheet correction: a reread name, and at a key
+   * change its numeral in the new key (with the old one kept when it was a pivot,
+   * diatonic in both keys: vi in F → ii in C).
+   */
+  private pivotOf(prev: ChordEvent, rr: { was: string; name: string; why: string } | null, before: KeyLike | null, after: KeyLike | null): Reread | null {
+    const moved = !!before && !!after && before.tonic !== after.tonic;
+    if (!rr && !moved) return null;
+    const key = after ?? before;
+    const rn = key ? roman(prev.root, prev.q, key) : null;
+    let pivot: string | null = null;
+    if (moved && before && after && diatonic(prev.root, prev.q, parentKey(before)) && diatonic(prev.root, prev.q, parentKey(after))) {
+      pivot = roman(prev.root, prev.q, before);
+    }
+    return { name: rr ? rr.name : null, was: rr ? rr.was : null, why: rr ? rr.why : pivot ? 'pivot' : 'new key', roman: rn, pivot };
   }
 
   private updateLocalKey(prev: ChordEvent | null, ev: ChordEvent, t: number): void {
@@ -479,10 +571,17 @@ class AnalyzerImpl implements Analyzer {
       let mode: Mode | null = null;
       if (cur.q === 'm7' || cur.q === 'min') mode = 'dorian';
       else if (isDom(cur.q)) mode = 'mixolydian';
-      if (mode && !(this.local && !this.local.implied && this.local.tonic !== cur.root && this.lastT - this.local.t < 2000)) {
-        const k = { tonic: cur.root, mode };
-        return { tonic: k.tonic, mode, label: keyLabel(k), conf: 0.5, implied: false };
+      // A chord inside the current vamp (IV7 in a dorian vamp) keeps its frame, unless it settles in for long enough to be a vamp of its own.
+      const inVamp = !!this.modal && fitsVamp(this.modal, cur) && this.lastT - this.curSince < MODAL_SHIFT_MS;
+      if (mode && !inVamp && !(this.local && !this.local.implied && this.local.tonic !== cur.root && this.lastT - this.local.t < 2000)) {
+        if (!this.modal || this.modal.tonic !== cur.root || this.modal.mode !== mode) this.modal = { tonic: cur.root, mode };
       }
+    }
+    if (this.modal) {
+      const k = this.modal;
+      const pm = parentKey(k);
+      const parent = `${k.mode === 'dorian' ? 'ii' : 'V'} of ${keyLabel(pm)}`;
+      return { tonic: k.tonic, mode: k.mode, label: keyLabel(k), conf: 0.5, implied: false, parent };
     }
     const g = this.gkey.estimate();
     const k = this.contextKey();
@@ -500,6 +599,12 @@ class AnalyzerImpl implements Analyzer {
   private emit(s: PianoSnapshot, changed: boolean, conf: number, runner: { c: Cand; conf: number } | null): Analysis | null {
     const key = this.keyReading();
     const spellKey = this.contextKey();
+    // A vamp just became modal: refigure the predictions in its frame, so the edge agrees with the center.
+    const frameNow = this.modal ? frameId(this.modal) : '';
+    if (frameNow !== this.predFrame && this.lastEvent && this.cur && this.cur.qi >= 0) {
+      this.predictions = predict(this.lastEvent, this.modal ?? this.contextKey(), this.history);
+      this.predFrame = frameNow;
+    }
     let chord: ChordReading | null = null;
     let rn: string | null = null;
     if (this.cur) {
@@ -539,6 +644,7 @@ class AnalyzerImpl implements Analyzer {
       prev.key?.label === key?.label &&
       prev.key?.implied === key?.implied &&
       prev.roman === rn &&
+      prev.predictions === this.predictions &&
       maxDiff(prev.pcs, pcs) < 0.03
     )
       return null;
@@ -553,6 +659,7 @@ class AnalyzerImpl implements Analyzer {
       roman: rn,
       predictions: this.predictions,
       landing: changed ? this.landing : null,
+      reread: changed ? this.reread : null,
       changed,
     };
     this.last = a;
@@ -585,6 +692,9 @@ function hasSemitoneRun(mask: number): boolean {
   }
   return false;
 }
+
+const frameId = (k: KeyLike) => `${k.tonic}${k.mode}`;
+const QINDEX_OF = (q: string) => TEMPLATES.findIndex((t) => t.q === q);
 
 const round2 = (x: number) => Math.round(x * 100) / 100;
 

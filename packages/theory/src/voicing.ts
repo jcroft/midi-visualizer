@@ -1,6 +1,7 @@
 // Voicing analysis: what each sounding note is doing in the chord, and what
 // kind of voicing the hand shape is (shell, rootless A/B, upper structure,
 // So What, drop 2/3, cluster). Pure; cheap enough to run on every change.
+import { QINDEX, TEMPLATES } from './chords';
 import { mod12 } from './pitch';
 
 export type VoicingType = 'shell' | 'rootlessA' | 'rootlessB' | 'ust' | 'quartal' | 'soWhat' | 'drop2' | 'drop3' | 'cluster' | 'close' | 'open';
@@ -203,4 +204,58 @@ export function voiceLeading(prev: readonly number[], next: readonly number[]): 
   for (let i = 0; i < a.length; i++) if (!ua.has(i)) moves.push({ from: a[i], to: null });
   for (let j = 0; j < b.length; j++) if (!ub.has(j)) moves.push({ from: null, to: b[j] });
   return moves;
+}
+
+/** Pitch classes of a chord's frame: root, guide tones, fifth (no extensions). */
+export function chordTones(root: number, q: string): number[] {
+  const t = TEMPLATES[QINDEX[q] ?? -1];
+  if (!t) return [mod12(root)];
+  const out: number[] = [];
+  for (let i = 0; i < 12; i++) if (t.roles[i] >= 1 && t.roles[i] <= 3) out.push(mod12(root + i));
+  return out;
+}
+
+/**
+ * Where one voice would go in the next chord: the nearest of its chord tones
+ * within a whole step, in semitones (0 = a common tone stays). Steps of a half
+ * step beat whole steps; null when nothing is that close.
+ */
+export function resolveVoice(note: number, tones: readonly number[]): number | null {
+  let best: number | null = null;
+  for (const d of [0, -1, 1, -2, 2]) {
+    if (tones.includes(mod12(note + d))) {
+      best = d;
+      break;
+    }
+  }
+  return best;
+}
+
+export interface Tendency {
+  /** Pitch class that leans. */
+  from: number;
+  /** Pitch class it leans toward. */
+  to: number;
+  /** Signed semitones (±1 or ±2). */
+  d: number;
+  cls: FnClass;
+}
+
+/**
+ * Tendency tones: each sounding guide tone, tension or alteration that would
+ * move by step into a chord tone of the predicted chord (in G13 → CΔ7 the F
+ * leans down to E and the B up to C). Common tones and roots/fifths are left out.
+ */
+export function tendencies(voices: readonly { pc: number; cls: FnClass }[], root: number, q: string): Tendency[] {
+  const tones = chordTones(root, q);
+  const out: Tendency[] = [];
+  for (const v of voices) {
+    if (v.cls !== 'guide' && v.cls !== 'tension' && v.cls !== 'alt') continue;
+    if (out.some((x) => x.from === v.pc)) continue;
+    if (tones.includes(v.pc)) continue; // a common tone stays put
+    const d = resolveVoice(v.pc, tones);
+    if (d === null || d === 0) continue;
+    out.push({ from: v.pc, to: mod12(v.pc + d), d, cls: v.cls });
+  }
+  return out;
 }

@@ -42,7 +42,83 @@ function bluesy(key: KeyLike | null, history: ChordEvent[]): boolean {
   return false;
 }
 
+/** True for a modal frame (dorian, mixolydian): numerals count from the modal tonic, function from the parent major. */
+export const isModal = (key: KeyLike | null): boolean => !!key && (key.mode === 'dorian' || key.mode === 'mixolydian');
+
+/** The functional key behind a frame: a mode folds to its parent major. */
+export function parentKey(key: KeyLike): KeyLike {
+  return isModal(key) ? { tonic: parentMajor(key), mode: 'major' } : key;
+}
+
+const minorish = (q: string) => q === 'm7' || q === 'min' || q === 'm6';
+
+/**
+ * Does a chord belong to a modal vamp? Dorian: i, IV7 (or a IV triad), the
+ * half-step side-slip up (the So What bridge), a ♭VII triad, v. Mixolydian: I7,
+ * ♭VII and IV triads, v–7. A major seventh chord is a resolution, not part of a
+ * vamp: G7 → CΔ7 is V–I even after a long G7, and CΔ7 out of a D–7 vamp lands
+ * on the parent major.
+ */
+export function fitsVamp(key: KeyLike, c: ChordEvent): boolean {
+  const deg = mod12(c.root - key.tonic);
+  if (key.mode === 'dorian') {
+    return (
+      (deg === 0 && minorish(c.q)) ||
+      (deg === 5 && (isDom(c.q) || c.q === 'maj')) ||
+      (deg === 1 && minorish(c.q)) ||
+      (deg === 10 && c.q === 'maj') ||
+      (deg === 7 && minorish(c.q))
+    );
+  }
+  if (key.mode === 'mixolydian') {
+    return (deg === 0 && isDom(c.q)) || ((deg === 10 || deg === 5) && c.q === 'maj') || (deg === 7 && minorish(c.q));
+  }
+  return false;
+}
+
+/** Vamp grammar inside a modal frame; empty when the chord isn't part of the vamp. */
+function vampRules(c: ChordEvent, key: KeyLike): Rule[] {
+  if (!fitsVamp(key, c)) return [];
+  const deg = mod12(c.root - key.tonic);
+  const R: Rule[] = [];
+  const add = (dr: number, q: string, w: number, why: string, kind?: PredictionKind) => R.push({ dr, q, w, why, kind });
+  if (key.mode === 'dorian') {
+    if (deg === 0) {
+      add(5, '7', 0.4, 'dorian i ↔ IV');
+      add(1, 'm7', 0.2, 'side-slip up (So What)');
+      add(10, 'maj', 0.12, 'i → ♭VII');
+      add(7, 'm7', 0.08, 'i → v');
+    } else if (deg === 5) {
+      add(7, 'm7', 0.55, 'IV → i vamp');
+      add(5, 'maj7', 0.2, 'resolves to the parent major');
+    } else if (deg === 1) {
+      add(11, 'm7', 0.6, 'slips back down');
+      add(5, '7', 0.15, 'dorian i ↔ IV');
+    } else {
+      add(mod12(-deg), 'm7', 0.6, 'back to i');
+    }
+  } else {
+    if (deg === 0) {
+      add(10, 'maj', 0.35, '♭VII → I vamp');
+      add(5, 'maj', 0.25, 'I7 → IV');
+      add(7, 'm7', 0.15, 'I7 → v–7');
+      add(5, 'maj7', 0.15, 'V–I after all');
+    } else if (deg === 7) {
+      add(5, '7', 0.6, 'v–7 → I7');
+    } else {
+      add(mod12(-deg), '7', 0.6, deg === 10 ? '♭VII → I' : 'IV → I');
+    }
+  }
+  return R;
+}
+
 function rulesFor(c: ChordEvent, key: KeyLike | null, history: ChordEvent[]): Rule[] {
+  if (key && isModal(key)) {
+    const v = vampRules(c, key);
+    if (v.length) return v;
+    // Outside the vamp, fall back to the functional grammar of the parent major.
+    key = parentKey(key);
+  }
   const deg = key ? mod12(c.root - key.tonic) : -1;
   const minorKey = key?.mode === 'minor';
   // history ends with c itself; prev is the chord before it
@@ -181,8 +257,9 @@ function degreeOf(root: number, q: string, key: KeyLike): string {
 }
 
 /** Function of a chord in a key. */
-export function functionOf(root: number, q: string, key: KeyLike | null): Fn | null {
-  if (!key) return null;
+export function functionOf(root: number, q: string, frame: KeyLike | null): Fn | null {
+  if (!frame) return null;
+  const key = parentKey(frame);
   const fam = familyOf(q);
   if (fam === 'dom' || fam === 'dim') return 'D';
   const deg = mod12(root - key.tonic);
@@ -197,15 +274,21 @@ export function functionOf(root: number, q: string, key: KeyLike | null): Fn | n
   return null;
 }
 
-function describe(root: number, q: string, key: KeyLike | null, forced?: PredictionKind): { roman: string | null; kind: PredictionKind; tonicizes?: string } {
-  if (!key) return { roman: null, kind: forced ?? 'diatonic' };
-  const rn = roman(root, q, key);
+/**
+ * Numeral and kind of a chord in a frame. Numerals count from the frame's
+ * tonic (so in D dorian, G7 is IV⁷, the same frame as the center numeral);
+ * whether it is diatonic is judged in the parent major.
+ */
+function describe(root: number, q: string, frame: KeyLike | null, forced?: PredictionKind): { roman: string | null; kind: PredictionKind; tonicizes?: string } {
+  if (!frame) return { roman: null, kind: forced ?? 'diatonic' };
+  const key = parentKey(frame);
+  const rn = roman(root, q, frame);
   if (forced) return { roman: rn, kind: forced };
   if (diatonic(root, q, key)) return { roman: rn, kind: 'diatonic' };
   if (familyOf(q) === 'dom') {
     const target = mod12(root + 5);
     const tq = diatonicQ(target, key);
-    if (tq && target !== key.tonic) return { roman: `V⁷/${degreeOf(target, tq, key)}`, kind: 'secondary' };
+    if (tq && target !== frame.tonic) return { roman: `V⁷/${degreeOf(target, tq, frame)}`, kind: 'secondary' };
   }
   if (q === 'maj7' || q === '6' || q === 'maj' || isMinorTonicQ(q)) {
     const k: KeyLike = { tonic: root, mode: isMinorTonicQ(q) ? 'minor' : 'major' };

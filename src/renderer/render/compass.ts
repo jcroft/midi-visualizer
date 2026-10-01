@@ -16,7 +16,8 @@ import type { Cell, SpriteBatch } from './sprites';
 import { TextLayer } from './text';
 import { HistoryStrip } from './history';
 import { Stack } from './stack';
-import { FN_RGB, fnFromRoman } from './taxonomy';
+import { FN_RGB, ROLE_RGB, fnFromRoman } from './taxonomy';
+import { tendencies, type Tendency } from '@theory/voicing';
 import {
   BADGE_FADE,
   BADGE_HOLD,
@@ -95,6 +96,25 @@ export const predOpacity = (p: number): number => Math.min(1, PRED_OPACITY_BASE 
 const RING_GREY = [0.46, 0.52, 0.72] as const;
 const LABEL_LIT = [0.83, 0.85, 0.94] as const;
 const LABEL_DIM = [0.3, 0.34, 0.45] as const;
+
+/** What the hands and feet are doing, beyond which notes sound (the Pedal & touch layer). */
+export interface Touch {
+  /** Per pitch class, level of keys held down under the fingers. */
+  held: Float32Array;
+  /** Per pitch class, level of notes held only by the sustain pedal. */
+  pedalOnly: Float32Array;
+  /** Per MIDI note, velocity 0..1 of its latest strike (0 when silent). */
+  vel: Float32Array;
+  /** Sustain pedal depth 0..1 (half-pedal reads as a thinner wash). */
+  pedal: number;
+  /** Soft pedal 0..1. */
+  soft: number;
+}
+
+/** How long a landed tendency tail stays lit, s. */
+const TAIL_LAND = 0.9;
+/** Damper sweep on pedal lift, s. */
+const DAMPER_SWEEP = 0.28;
 
 /** How a predicted chord's label hangs off its anchor point. */
 type Align = 'left' | 'right' | 'top' | 'bottom';
@@ -176,7 +196,16 @@ export class Compass {
   private keyTonicName = '';
   private keyModeName = '';
   private keyImplied = false;
+  private keyParent = '';
   private histKey = '';
+  // Tendency tails toward the top prediction, and the ones that just landed.
+  private tails: Tendency[] = [];
+  private tailKey = '';
+  private landed: Tendency[] = [];
+  private landT = -1e9;
+  // Damper sweep on pedal lift.
+  private wasPedal = false;
+  private damperT = -1e9;
   private wheelTarget = 0;
   private readonly wheelSpring: Spring = { x: 0, v: 0 };
   private readonly weather = new Float32Array(3);
@@ -274,7 +303,12 @@ export class Compass {
 
   setLayers(layers: Layers): void {
     const stackChanged = layers.stack !== this.layers.stack;
+    const voicesChanged = layers.voices !== this.layers.voices;
     this.layers = { ...layers };
+    if (voicesChanged) {
+      this.history.voicesOn = layers.voices;
+      this.history.layout();
+    }
     if (stackChanged) this.chordLayer.place(this.L.cx, this.L.cy - this.L.R * this.chordDrop(), this.L.R * 2.0, this.L.R * 1.3, this.L.dpr);
     this.layoutPreds(true);
   }
@@ -341,6 +375,13 @@ export class Compass {
         this.chordLayer.changed();
       }
 
+      // Hindsight: the chord before this one may read differently now (B°7 → G7(♭9), vi → ii at a pivot).
+      if (a.changed && a.reread) this.history.reread(a.reread);
+      // Tendency tails whose target is now sounding fill in.
+      if (a.changed) {
+        this.landed = this.tails.filter((x) => (a.pcs[x.to] ?? 0) >= 0.25);
+        this.landT = t;
+      }
       // Lead sheet: a new event appends (with a key-change mark if the key moved), a refinement rewrites it.
       if (a.changed || !this.history.hasCurrent) {
         const kl = a.key ? a.key.label : '';
@@ -401,10 +442,11 @@ export class Compass {
     if (k) {
       let label = k.label.toUpperCase();
       if (k.mode === 'major' && !/MAJOR/.test(label)) label += ' MAJOR';
-      kt = 'KEY · ' + label + (k.implied ? ' (IMPLIED)' : '');
+      kt = 'KEY · ' + label + (k.implied ? ' (IMPLIED)' : '') + (k.parent ? ' · ' + k.parent.toUpperCase() : '');
       this.keyTonicName = k.label.split(' ')[0];
       this.keyModeName = k.mode.toUpperCase();
       this.keyImplied = k.implied;
+      this.keyParent = k.parent ?? '';
       if (k.tonic !== this.lastKeyTonic) {
         this.keyChangeT = t;
         this.lastKeyTonic = k.tonic;
@@ -419,7 +461,11 @@ export class Compass {
 
     // The lead sheet's future: the top prediction and the chord after it.
     const top = a.predictions[0];
-    this.history.setFuture(top ? [{ name: top.name, roman: top.roman ?? '', root: top.root }, ...(top.then ? [{ name: top.then.name, roman: top.then.roman ?? '', root: top.then.root }] : [])] : []);
+    this.history.setFuture(
+      top
+        ? [{ name: top.name, roman: top.roman ?? '', root: top.root, q: top.q }, ...(top.then ? [{ name: top.then.name, roman: top.then.roman ?? '', root: top.then.root, q: top.then.q }] : [])]
+        : [],
+    );
 
     // The ghost arcs restart their fade-in only when the predicted chords change, not when a probability shifts.
     let pk = '';
@@ -550,6 +596,16 @@ export class Compass {
     else if (align === 'right') [x0, x1, y0, y1] = [ax - bw, ax, ay - bh / 2, ay + bh / 2];
     else if (align === 'top') [x0, x1, y0, y1] = [ax - bw / 2, ax + bw / 2, ay, ay + bh];
     else [x0, x1, y0, y1] = [ax - bw / 2, ax + bw / 2, ay - bh, ay];
+    // Keep clear of the lead sheet (and its hidden voices) along the bottom.
+    if (this.layers.history && this.L.view === 'compass') {
+      const floor = this.history.top + R * 0.02;
+      if (y0 < floor) {
+        const dy = floor - y0;
+        y0 += dy;
+        y1 += dy;
+        ay += dy;
+      }
+    }
     return { root: p.root, name: p.name, sub, nameSize, subSize, align, ax, ay, x0, y0, x1, y1, opacity };
   }
 
@@ -568,7 +624,7 @@ export class Compass {
    * the local note state (so nodes light on the same frame as the key press);
    * `levels` = the same per MIDI note, for the voicing stack and register web.
    */
-  draw(sp: SpriteBatch, t: number, dt: number, instant: Float32Array, levels: Float32Array, pedalDown: boolean): void {
+  draw(sp: SpriteBatch, t: number, dt: number, instant: Float32Array, levels: Float32Array, pedalDown: boolean, touch: Touch): void {
     const { cx, cy, R } = this.L;
     const s = R / 180; // size reference
     const hair = Math.max(1, R * HAIRLINE);
@@ -580,6 +636,8 @@ export class Compass {
       this.noteFlag = false;
       this.lastNoteT = t;
     }
+    if (this.wasPedal && !pedalDown) this.damperT = t;
+    this.wasPedal = pedalDown;
     const idle = t - this.lastNoteT - IDLE_AFTER;
     const breath = idle > 0 ? 1 + BREATH_DEPTH * Math.sin(2 * Math.PI * BREATH_HZ * idle) : 1;
 
@@ -697,7 +755,15 @@ export class Compass {
         const w = this.w[pc];
         const f = this.flare[pc];
         const c3 = pc * 3;
-        if (w > 0.05 || f > 0.02) {
+        // Pedal & touch: a note held only by the pedal loses its crisp dot and pools into a haze on its spoke.
+        const pedalOnly = on.touch && touch.pedalOnly[pc] > 0.02 && touch.held[pc] < 0.02;
+        if ((w > 0.05 || f > 0.02) && pedalOnly) {
+          const wet = 0.55 + 0.45 * touch.pedal;
+          // pedal tails are faint by nature; the haze follows them on a gentler curve so it stays legible
+          const k = Math.max(0.45, Math.sqrt(Math.max(w, touch.pedalOnly[pc])));
+          sp.glow(x, y, R * (0.16 + 0.16 * wet) * Math.max(0.5, k), NOTE_RGB[c3], NOTE_RGB[c3 + 1], NOTE_RGB[c3 + 2], 0.7 * k * wet);
+          sp.glow(x, y, R * 0.06 + 4, NOTE_RGB[c3], NOTE_RGB[c3 + 1], NOTE_RGB[c3 + 2], 0.8 * k);
+        } else if (w > 0.05 || f > 0.02) {
           // Saturation flares only on attack: blend toward the flare color.
           sp.glow(x, y, R * 0.2 * w + 6 + f * 14 * s, NOTE_RGB[c3] + f, NOTE_RGB[c3 + 1] + f, NOTE_RGB[c3 + 2] + f, 0.85 * w + f * 0.8);
           sp.disc(x, y, (3 + 4 * w) * Math.max(1, s), NOTE_RGB[c3] * (0.8 + w) + f * 0.5, NOTE_RGB[c3 + 1] * (0.8 + w) + f * 0.5, NOTE_RGB[c3 + 2] * (0.8 + w) + f * 0.5, 1);
@@ -718,6 +784,20 @@ export class Compass {
         sp.arc(cx + Math.cos(ang) * R, cy + Math.sin(ang) * R, R * 0.05, 1.4 * Math.max(1, s), 0, Math.PI, 8, BRIGHT_RGB[c3], BRIGHT_RGB[c3 + 1], BRIGHT_RGB[c3 + 2], 0.85);
       }
     }
+
+    // ---- damper sweep: on pedal lift, a quick ring closes over the ring as the haze clears ----
+    if (on.touch) {
+      const age = t - this.damperT;
+      if (age >= 0 && age < DAMPER_SWEEP) {
+        const u = age / DAMPER_SWEEP;
+        const e = 1 - (1 - u) * (1 - u);
+        sp.ring(cx, cy, R * (1.08 - 0.3 * e), Math.max(1, R * 0.006), 0.8, 0.84, 0.95, 0.2 * (1 - u));
+      }
+    }
+
+    // ---- tendency tails: where each guide tone or tension wants to go in the predicted chord ----
+    this.updateTails(chord);
+    if (on.tendency && chord) this.drawTails(sp, t);
 
     // ---- needle, and the trail of recent roots on its track ----
     if (on.needle) {
@@ -791,8 +871,9 @@ export class Compass {
     // ---- voicing stack (inside the ring) and the lead-sheet strip (below it) ----
     this.stack.update(levels, chord ? chord.root : -1, chord ? chord.quality : '', this.chordEvent, t);
     this.chordEvent = false;
-    this.stack.draw(sp, t, on.stack);
-    this.history.draw(sp, t, on.history && this.L.view === 'compass', on.predictions);
+    this.stack.draw(sp, t, on.stack, on.touch ? touch : null);
+    if (chord) this.history.setVoices(this.stack.current);
+    this.history.draw(sp, t, on.history && this.L.view === 'compass', on.predictions, on.voices);
 
     // ---- pedal indicator (bottom right) ----
     if (this.pedalCell) {
@@ -824,6 +905,61 @@ export class Compass {
     for (const l of this.predLayers) l.update(t);
     this.thenLayer.update(t);
     this.badgeLayer.update(t);
+  }
+
+  /** Recompute the tendency tails when the voicing or the top prediction changes. */
+  private updateTails(chord: Analysis['chord']): void {
+    const r = this.stack.current;
+    const top = this.a?.predictions[0];
+    if (!chord || !r || !top) {
+      this.tails = [];
+      this.tailKey = '';
+      return;
+    }
+    const key = r.voices.map((v) => v.note).join(',') + '|' + chord.root + chord.quality + '|' + top.root + top.q;
+    if (key === this.tailKey) return;
+    this.tailKey = key;
+    this.tails = tendencies(r.voices, top.root, top.q);
+  }
+
+  /**
+   * Each tail is a short dotted comet leaving a sounding node toward the note it
+   * wants to become (predicted tier: dotted, no glow), with a hollow mark on the
+   * target. When the next chord lands on it, the whole path fills and glows.
+   */
+  private drawTails(sp: SpriteBatch, t: number): void {
+    const { cx, cy, R } = this.L;
+    const fade = clamp01((t - this.predT - PRED_DELAY) / PRED_FADE);
+    const dot = Math.max(1.2, R * 0.0055);
+    for (const tail of this.tails) {
+      const a0 = angOf(tail.from), a1 = angOf(tail.to);
+      const x0 = cx + Math.cos(a0) * R, y0 = cy + Math.sin(a0) * R;
+      const x1 = cx + Math.cos(a1) * R, y1 = cy + Math.sin(a1) * R;
+      const c = ROLE_RGB[tail.cls];
+      const lean = 0.3;
+      const n = 11;
+      for (let k = 1; k <= n; k++) {
+        const u = (k / n) * lean;
+        const q = 1 - k / (n + 2);
+        sp.disc(x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, dot * (0.8 + 0.9 * q), c[0], c[1], c[2], 0.95 * q * fade);
+      }
+      if (this.w[tail.to] <= LIT_THRESHOLD) sp.ring(x1, y1, R * 0.028, Math.max(1, R * 0.0025), c[0], c[1], c[2], 0.4 * fade);
+    }
+    const age = t - this.landT;
+    if (age < TAIL_LAND) {
+      const k = 1 - age / TAIL_LAND;
+      const g = ROLE_RGB.guide;
+      for (const tail of this.landed) {
+        const a0 = angOf(tail.from), a1 = angOf(tail.to);
+        const x0 = cx + Math.cos(a0) * R, y0 = cy + Math.sin(a0) * R;
+        const x1 = cx + Math.cos(a1) * R, y1 = cy + Math.sin(a1) * R;
+        const n = Math.max(6, Math.floor(Math.hypot(x1 - x0, y1 - y0) / (R * 0.03)));
+        for (let j = 1; j < n; j++) {
+          const u = j / n;
+          sp.disc(x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, dot * 1.2, g[0] * 1.3, g[1] * 1.3, g[2] * 1.3, 0.8 * k, true);
+        }
+      }
+    }
   }
 
   private drawPredictions(sp: SpriteBatch, t: number): void {
@@ -1015,6 +1151,13 @@ export class Compass {
       ctx.font = `500 ${modeSize * 0.75}px ${MONO_FONT}`;
       ctx.fillStyle = 'rgba(205,212,232,0.55)';
       ctx.fillText('IMPLIED', x + tw + gap, base - size * 0.42 + modeSize * 1.3);
+    }
+    // A mode's place in its parent major ("= II OF C"), hollow: the functional reading, implied.
+    if (this.keyParent) {
+      ctx.font = `500 ${modeSize * 0.8}px ${MONO_FONT}`;
+      ctx.lineWidth = 0.8;
+      ctx.strokeStyle = 'rgba(205,212,232,0.7)';
+      ctx.strokeText('= ' + this.keyParent.toUpperCase(), x + tw + gap, base - size * 0.42 + modeSize * 1.3);
     }
     ctx.letterSpacing = '0px';
   }
