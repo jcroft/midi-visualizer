@@ -19,10 +19,17 @@ if [ ! -d node_modules ] || [ package.json -nt node_modules ]; then
   npm install --no-audit --no-fund
 fi
 
+# Newer npm versions skip install scripts by default, which leaves Electron's
+# app binary undownloaded. Fetch it directly if it's missing.
+if [ ! -f node_modules/electron/path.txt ]; then
+  echo "Downloading the Electron app binary..."
+  node node_modules/electron/install.js
+fi
+
 if [ "${1:-}" = "--dev" ]; then
   exec npx electron-vite dev
 fi
 
 # Production build: this is what the latency numbers should be measured on.
 npx electron-vite build
-exec npx electron-vite preview
+exec npx electron-vite preview --skipBuild
