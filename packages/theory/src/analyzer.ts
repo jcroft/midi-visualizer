@@ -1,6 +1,6 @@
 // Stateful analyzer: PianoSnapshot -> Analysis. Pure TypeScript; time only
 // arrives through snapshot.t, so it is deterministic and testable.
-import type { Analysis, ChordReading, KeyReading, PianoSnapshot, Prediction } from '../../../src/shared/analysis';
+import type { Analysis, ChordReading, KeyReading, Landing, PianoSnapshot, Prediction } from '../../../src/shared/analysis';
 import {
   type Cand,
   NQ,
@@ -17,7 +17,7 @@ import {
 } from './chords';
 import { KeyTracker, diatonic, roman } from './key';
 import { mod12, keyLabel, parentMajor, spell, type KeyLike, type Mode } from './pitch';
-import { type ChordEvent, predict } from './predict';
+import { type ChordEvent, landingFor, predict } from './predict';
 
 // ---- tuning ---------------------------------------------------------------
 const ARM_MS = 250; // a trigger (3+ onsets / new bass / pedal re-catch) arms a change for this long
@@ -96,6 +96,7 @@ class AnalyzerImpl implements Analyzer {
   private pendName: string | null = null;
   private pendSince = 0;
   private predictions: Prediction[] = [];
+  private landing: Landing | null = null;
   private last: Analysis | null = null;
 
   reset(): void {
@@ -119,6 +120,7 @@ class AnalyzerImpl implements Analyzer {
     this.local = null;
     this.pendName = null;
     this.predictions = [];
+    this.landing = null;
     this.last = null;
   }
 
@@ -431,6 +433,7 @@ class AnalyzerImpl implements Analyzer {
       const g = this.gkey.estimate();
       if (this.local && g && this.local.tonic !== g.tonic && t - this.local.t > 1000) this.local = null;
     }
+    this.landing = prev && this.predictions.length ? landingFor(this.predictions, prev, ev, this.contextKey(), this.history) : null;
     this.predictions = r.qi >= 0 ? predict(ev, this.contextKey(), this.history) : [];
   }
 
@@ -549,6 +552,7 @@ class AnalyzerImpl implements Analyzer {
       key,
       roman: rn,
       predictions: this.predictions,
+      landing: changed ? this.landing : null,
       changed,
     };
     this.last = a;

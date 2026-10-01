@@ -3,6 +3,9 @@
 import { CustomBlending, OneFactor, OneMinusSrcAlphaFactor, type Material } from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import {
+  COMPASS_ONLY_CY,
+  COMPASS_ONLY_R_H,
+  COMPASS_ONLY_R_W,
   COMPASS_R_H,
   COMPASS_R_W,
   KEY_COUNT,
@@ -13,7 +16,11 @@ import {
   RIVER_MARGIN_FRAC,
 } from './tuning';
 
+/** compass: the Compass alone, centered (default). river: River on the left + Compass on the right. */
+export type View = 'compass' | 'river';
+
 export class Layout {
+  view: View = 'compass';
   w = 1;
   h = 1;
   dpr = 1;
@@ -49,11 +56,17 @@ export class Layout {
     this.y0 = m;
     this.step = (h - 2 * m) / KEY_COUNT;
     this.scale = Math.max(0.5, h / 900);
-    const left = this.nowX + 24;
-    const cw = w - left;
-    this.cx = left + cw * 0.5;
-    this.cy = h * 0.48;
-    this.R = Math.max(40, Math.min(cw * COMPASS_R_W, h * COMPASS_R_H));
+    if (this.view === 'compass') {
+      this.cx = w * 0.5;
+      this.cy = h * COMPASS_ONLY_CY;
+      this.R = Math.max(40, Math.min(w * COMPASS_ONLY_R_W, h * COMPASS_ONLY_R_H));
+    } else {
+      const left = this.nowX + 24;
+      const cw = w - left;
+      this.cx = left + cw * 0.5;
+      this.cy = h * 0.48;
+      this.R = Math.max(40, Math.min(cw * COMPASS_R_W, h * COMPASS_R_H));
+    }
 
     this.uNowX.value = this.nowX;
     this.uPps.value = this.pps;

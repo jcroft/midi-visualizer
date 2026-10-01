@@ -8,7 +8,8 @@ import { PianoState } from './midi/pianoState';
 import { attachQwerty } from './midi/qwerty';
 import { Replayer } from './midi/replay';
 import { Recorder } from './midi/recorder';
-import { createVisualizer, type VisualMode } from './render/visualizer';
+import { createVisualizer, type LayerId, type Layers, type View, type VisualMode } from './render/visualizer';
+import { allLayersOn } from './render/layers';
 import { FrameStats, LatencyProbe } from './bench/stats';
 import { Hud } from './bench/hud';
 import { buildChrome } from './ui/chrome';
@@ -43,6 +44,45 @@ async function boot(): Promise<void> {
     viz.setMode(m);
   };
 
+  // The compass alone is the default; the River is remembered if you turn it on.
+  const VIEW_KEY = 'view';
+  let view: View = 'compass';
+  try {
+    if (localStorage.getItem(VIEW_KEY) === 'river') view = 'river';
+  } catch {
+    /* storage unavailable: keep the default */
+  }
+  viz.setView(view);
+  const setView = (v: View) => {
+    view = v;
+    viz.setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Compass layers, all on unless you've turned some off.
+  const LAYERS_KEY = 'layers';
+  const layers: Layers = allLayersOn();
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYERS_KEY) ?? '{}') as Partial<Layers>;
+    for (const id of Object.keys(layers) as LayerId[]) if (typeof saved[id] === 'boolean') layers[id] = saved[id]!;
+  } catch {
+    /* storage unavailable or corrupt: all on */
+  }
+  viz.setLayers(layers);
+  const setLayer = (id: LayerId, on: boolean) => {
+    layers[id] = on;
+    viz.setLayers(layers);
+    try {
+      localStorage.setItem(LAYERS_KEY, JSON.stringify(layers));
+    } catch {
+      /* ignore */
+    }
+  };
+
   buildChrome(document.getElementById('chrome') as HTMLElement, {
     midi,
     replay,
@@ -51,6 +91,10 @@ async function boot(): Promise<void> {
     stats,
     getMode: () => mode,
     setMode,
+    getView: () => view,
+    setView,
+    getLayers: () => layers,
+    setLayer,
     panic: () => bus.emit({ type: 'panic', t: performance.now(), recvT: performance.now(), src: 'ui' }),
     toggleHud: () => hud.toggle(),
   });

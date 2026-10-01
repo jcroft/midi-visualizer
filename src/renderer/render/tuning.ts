@@ -75,9 +75,33 @@ export const BAND_C = 0.06;
 export const BAND_ALPHA = 0.28;
 
 // ---------- compass ----------
-/** Compass radius = min(region width * this, height * COMPASS_R_H). */
+/** River view: compass radius = min(region width * this, height * COMPASS_R_H). */
 export const COMPASS_R_W = 0.27;
 export const COMPASS_R_H = 0.27;
+/** Compass-only view (default): radius = min(width * this, height * COMPASS_ONLY_R_H), center at height * CY. */
+export const COMPASS_ONLY_R_W = 0.24;
+export const COMPASS_ONLY_R_H = 0.29;
+export const COMPASS_ONLY_CY = 0.5;
+/** Radius stack, as multiples of R: needle track, key arc, prediction orbit, prediction labels. */
+export const NEEDLE_R = 1.06;
+export const KEY_ARC_R = 1.14;
+export const KEY_ARC_THICK = 0.05;
+export const ORBIT_R = 1.3;
+export const PRED_LABEL_R = 1.4;
+/** Hairline thickness (ring, polygon edges) as a fraction of R. */
+export const HAIRLINE = 0.004;
+export const POLY_ALPHA = 0.2;
+/** Chord-root trail on the needle track: how many past roots, and how long each lingers. */
+export const TRAIL_LEN = 3;
+export const TRAIL_FADE = 4;
+/** Tritone shimmer: opacity base +- swing, at this rate (Hz). Slow, so it doesn't pull the eye. */
+export const TRITONE_BASE = 0.3;
+export const TRITONE_SWING = 0.1;
+export const TRITONE_HZ = 1.2;
+/** Idle breathing: after this many seconds without a note, the ring breathes +-8% at 0.08 Hz. */
+export const IDLE_AFTER = 6;
+export const BREATH_DEPTH = 0.08;
+export const BREATH_HZ = 0.08;
 /** Spring natural frequencies (rad/s). Critically damped; settle ~ 4.7 / omega. */
 export const NEEDLE_OMEGA = 13; // ~0.35 s
 export const KEY_OMEGA = 5.2; // ~0.9 s
@@ -87,18 +111,37 @@ export const PC_SMOOTH_TAU = 0.08;
 export const NODE_FLARE_TAU = 0.25;
 /** A pitch class counts as lit (polygon vertex) above this weight. */
 export const LIT_THRESHOLD = 0.25;
-/** Prediction ghosts: fade-in delay and duration after the set changes. */
-export const PRED_DELAY = 0.2;
+/** Prediction ghosts: fade-in delay (after the chord label lands) and duration after the set changes. */
+export const PRED_DELAY = 0.35;
 export const PRED_FADE = 0.2;
-export const PRED_MIN_OPACITY = 0.1;
-/** Ripple when the played chord lands on a predicted root. */
+/** Prediction opacity = base + gain * p; label size = (base + gain * sqrt(p)) * R. */
+export const PRED_OPACITY_BASE = 0.25;
+export const PRED_OPACITY_GAIN = 0.6;
+export const PRED_SIZE_BASE = 0.1;
+export const PRED_SIZE_GAIN = 0.08;
+/** A slow brightness pulse travels along each prediction arc, root to target. */
+export const PRED_PULSE_PERIOD = 2.4;
+export const PRED_PULSE_DEPTH = 0.15;
+/** The second step (chord after next): opacity relative to its parent. */
+export const THEN_DIM = 0.5;
+/** Ripple when the played chord lands on a prediction. */
 export const RIPPLE_TIME = 0.6;
+/** Landing: the ghost arc fills as a comet, then fades. */
+export const COMET_FILL = 0.18;
+export const COMET_FADE = 0.3;
+/** Landing badge ("ii–V–I"): hold, then fade. */
+export const BADGE_HOLD = 1.4;
+export const BADGE_FADE = 0.5;
+/** Chord history (lead-sheet line) in compass view. */
+export const HISTORY_LEN = 6;
+export const HISTORY_OPACITY = [0.9, 0.6, 0.45, 0.32, 0.22, 0.15];
 
 // ---------- text ----------
 export const DISPLAY_FONT = '"SF Pro Display", -apple-system, "Helvetica Neue", Inter, Arial, sans-serif';
 export const MONO_FONT = '"SF Mono", ui-monospace, Menlo, monospace';
-/** Chord name height as a fraction of the compass radius. */
+/** Chord name height as a fraction of the compass radius (shrinks to fit 1.6 R wide). */
 export const CHORD_SIZE_R = 0.36;
+export const CHORD_MAX_W_R = 1.6;
 /** Below this confidence the chord dims and the runner-up shows. */
 export const LOW_CONF = 0.5;
 export const LOW_CONF_OPACITY = 0.45;

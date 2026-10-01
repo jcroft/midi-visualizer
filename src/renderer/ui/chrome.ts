@@ -1,12 +1,13 @@
 // Bottom-left controls; fade out after 3 s without mouse movement.
 //
 // Keyboard shortcuts avoid the QWERTY piano keys (A W S E D F T G Y H U J K O L P ; ' Z X Space):
-//   Tab = HUD · 1/2/3 = Normal/Stress/Flash · Esc = panic · Cmd/Ctrl+F = fullscreen
+//   Tab = HUD · V = River on/off · 1/2/3 = Normal/Stress/Flash · Esc = panic · Cmd/Ctrl+F = fullscreen
 import type { MidiController } from '../midi/input';
 import type { Replayer } from '../midi/replay';
 import type { Recorder } from '../midi/recorder';
 import type { FrameStats, LatencyProbe } from '../bench/stats';
-import type { VisualMode } from '../render/visualizer';
+import type { LayerId, Layers, View, VisualMode } from '../render/visualizer';
+import { LAYERS } from '../render/layers';
 
 export interface ChromeDeps {
   midi: MidiController;
@@ -16,6 +17,10 @@ export interface ChromeDeps {
   stats: FrameStats;
   getMode(): VisualMode;
   setMode(m: VisualMode): void;
+  getView(): View;
+  setView(v: View): void;
+  getLayers(): Layers;
+  setLayer(id: LayerId, on: boolean): void;
   panic(): void;
   toggleHud(): void;
 }
@@ -154,6 +159,65 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
     demoBtn.classList.toggle('on', replay.playing);
   };
 
+  const riverBtn = button('River', 'Show the River piano roll beside the compass (V)', () => toggleView());
+  const toggleView = () => {
+    deps.setView(deps.getView() === 'river' ? 'compass' : 'river');
+    riverBtn.classList.toggle('on', deps.getView() === 'river');
+  };
+  riverBtn.classList.toggle('on', deps.getView() === 'river');
+
+  // --- compass layers ----------------------------------------------------
+  const layerWrap = document.createElement('span');
+  layerWrap.style.position = 'relative';
+  el.appendChild(layerWrap);
+  const layerBtn = document.createElement('button');
+  layerBtn.type = 'button';
+  layerBtn.tabIndex = -1;
+  layerBtn.textContent = 'Layers ▾';
+  layerBtn.title = 'Turn parts of the compass on and off';
+  layerBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  layerWrap.appendChild(layerBtn);
+  const layerPanel = document.createElement('div');
+  Object.assign(layerPanel.style, {
+    position: 'absolute',
+    bottom: 'calc(100% + 6px)',
+    left: '0',
+    minWidth: '200px',
+    padding: '8px 10px',
+    background: 'rgba(11,12,16,0.94)',
+    border: '1px solid var(--line)',
+    borderRadius: '8px',
+    display: 'none',
+    flexDirection: 'column',
+    gap: '6px',
+    whiteSpace: 'nowrap',
+  } satisfies Partial<CSSStyleDeclaration>);
+  layerWrap.appendChild(layerPanel);
+  for (const l of LAYERS) {
+    const row = document.createElement('label');
+    Object.assign(row.style, { display: 'flex', gap: '6px', alignItems: 'center', cursor: 'pointer' });
+    row.title = l.title;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = deps.getLayers()[l.id];
+    cb.tabIndex = -1;
+    cb.addEventListener('change', () => {
+      deps.setLayer(l.id, cb.checked);
+      cb.blur();
+    });
+    const text = document.createElement('span');
+    text.textContent = l.label;
+    row.append(cb, text);
+    layerPanel.appendChild(row);
+  }
+  let layersOpen = false;
+  layerBtn.addEventListener('click', () => {
+    layersOpen = !layersOpen;
+    layerPanel.style.display = layersOpen ? 'flex' : 'none';
+    layerBtn.classList.toggle('on', layersOpen);
+    layerBtn.blur();
+  });
+
   const modeBtns = new Map<VisualMode, HTMLButtonElement>();
   const setMode = (m: VisualMode) => {
     deps.setMode(m);
@@ -196,7 +260,7 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
 
   const hint = document.createElement('span');
   hint.className = 'note';
-  hint.textContent = 'QWERTY plays notes · Space = pedal · Tab = HUD · 1/2/3 = modes · Esc = panic · ⌘F = fullscreen';
+  hint.textContent = 'QWERTY plays notes · Space = pedal · Tab = HUD · V = River · 1/2/3 = modes · Esc = panic · ⌘F = fullscreen';
   el.append(hint, status);
 
   // --- keyboard ------------------------------------------------------------
@@ -216,6 +280,10 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
       deps.panic();
       return;
     }
+    if (e.code === 'KeyV') {
+      toggleView();
+      return;
+    }
     const m = MODES.find((x) => x.key === e.code);
     if (m) setMode(m.mode);
   });
@@ -228,7 +296,7 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
     document.body.style.cursor = '';
     clearTimeout(idleTimer);
     idleTimer = window.setTimeout(() => {
-      if (hovering || panelOpen) return;
+      if (hovering || panelOpen || layersOpen) return;
       el.classList.add('idle');
       document.body.style.cursor = 'none';
     }, IDLE_MS);
