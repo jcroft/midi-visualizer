@@ -35,11 +35,52 @@ export interface KeyReading {
   implied: boolean;
 }
 
+/** Harmonic function: tonic, subdominant, dominant. */
+export type Fn = 'T' | 'SD' | 'D';
+
+/**
+ * diatonic: in the key. secondary: a dominant of a diatonic chord (V⁷/ii).
+ * sub: a substitution (tritone sub, backdoor). modulating: a tonic outside the key.
+ * chromatic: anything else.
+ */
+export type PredictionKind = 'diatonic' | 'secondary' | 'sub' | 'chromatic' | 'modulating';
+
+export interface PredictionStep {
+  root: number;
+  name: string;
+  q: string;
+  roman: string | null;
+  p: number;
+}
+
 export interface Prediction {
   root: number;
   name: string;
   p: number; // 0..1
   why: string; // "ii–V pull", "tritone sub"
+  /** Template id ("7", "m7", "maj7"), so a landing can match on chord family. */
+  q: string;
+  /** Roman numeral in the current key: "V⁷", "V⁷/ii", "♭II⁷". */
+  roman: string | null;
+  fn: Fn | null;
+  kind: PredictionKind;
+  /** Key label this chord would tonicize when kind is 'modulating'. */
+  tonicizes?: string;
+  /** The likely chord after this one (top prediction only), e.g. CΔ7 after D–7 → G7. */
+  then?: PredictionStep;
+}
+
+/** How a new chord event relates to what was predicted for it. */
+export interface Landing {
+  /** Root of the chord we came from (where the ghosts started). */
+  from: number;
+  /** Index into the previous analysis's predictions; -1 = none matched. */
+  hit: number;
+  /** Root and chord family both matched (a root-only match is a partial landing). */
+  exact: boolean;
+  /** Short name for the moment: "ii–V–I", "turnaround", "tritone sub!", "backdoor", "modal interchange". */
+  label: string | null;
+  fn: Fn | null;
 }
 
 export interface Analysis {
@@ -52,6 +93,8 @@ export interface Analysis {
   key: KeyReading | null;
   roman: string | null; // "ii⁷", "V⁷", "IΔ⁷"
   predictions: Prediction[]; // at most 3
+  /** Set only on the analysis that carries a new chord event. */
+  landing: Landing | null;
   /** True when this analysis is a new chord event (not a refinement). */
   changed: boolean;
 }

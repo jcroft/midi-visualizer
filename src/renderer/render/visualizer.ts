@@ -15,7 +15,8 @@ import { float, pass, screenUV, smoothstep, vec4 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { BAND_RGB, NOTE_RGB } from './color';
 import { Compass } from './compass';
-import { Layout } from './layout';
+import { Layout, type View } from './layout';
+import type { Layers } from './layers';
 import { Particles } from './particles';
 import { River } from './river';
 import { SpriteBatch } from './sprites';
@@ -37,12 +38,16 @@ import {
 
 /** normal: River + Compass. stress: + 200k GPU particles. flash: latency test (screen flashes on note-on). */
 export type VisualMode = 'normal' | 'stress' | 'flash';
+export type { View } from './layout';
+export type { Layers, LayerId } from './layers';
 
 export interface Visualizer {
   readonly backend: 'webgpu' | 'webgl2';
   onEvent(ev: PianoEvent): void;
   setAnalysis(a: Analysis): void;
   setMode(m: VisualMode): void;
+  setView(v: View): void;
+  setLayers(l: Layers): void;
   resize(w: number, h: number, dpr: number): void;
   render(nowMs: number): void;
 }
@@ -75,6 +80,7 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
   const over = new SpriteBatch(scene, 2048, 50, atlas.texture); // compass shapes
   const particles = new Particles(scene, L); // stress mode (0)
   compass.setCells(atlas.cells.slice(0, 12), atlas.cells[12]);
+  river.ribbonMesh.visible = river.bloomMesh.visible = false; // compass view by default
 
   // ---- post: bloom over the whole scene, then a soft vignette ----
   const pipeline = new RenderPipeline(renderer);
@@ -86,6 +92,7 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
 
   // ---- state ----
   let mode: VisualMode = 'normal';
+  let view: View = 'compass';
   const epochMs = performance.now();
   let lastMs = -1;
   let lastT = 0;
@@ -161,7 +168,6 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
     const riverH = KEY_COUNT * step;
     under.rect(nowX, L.y0 + riverH / 2, 6, riverH / 2, 0.58, 0.64, 0.87, 0.05, true);
     under.rect(nowX, L.y0 + riverH / 2, 0.5, riverH / 2, 0.58, 0.64, 0.87, 0.25, true);
-    instant.fill(0);
     for (let n = LOWEST_NOTE; n < LOWEST_NOTE + KEY_COUNT; n++) {
       const pc = n % 12;
       const y = L.yOf(n);
@@ -172,8 +178,6 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
         const g = held ? 1.3 : 0.8;
         const c3 = pc * 3;
         under.rect(nowX, y, 7, Math.max(1.5, step * 0.42), NOTE_RGB[c3] * g + fl, NOTE_RGB[c3 + 1] * g + fl, NOTE_RGB[c3 + 2] * g + fl, Math.min(1, lvl), true);
-        const k = Math.min(1, lvl);
-        if (k > instant[pc]) instant[pc] = k;
       } else if (BLACK_KEY[pc]) {
         under.rect(nowX, y, 2, 0.5, 0.58, 0.64, 0.87, 0.1);
       } else {
@@ -181,6 +185,27 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
       }
     }
     under.end();
+  }
+
+  /** 12 immediate pitch-class levels from the local note state, so compass nodes light on the key-press frame. */
+  function computeInstant(t: number): void {
+    instant.fill(0);
+    for (let n = LOWEST_NOTE; n < LOWEST_NOTE + KEY_COUNT; n++) {
+      const lvl = river.level(n, t);
+      if (lvl <= 0.02) continue;
+      const pc = n % 12;
+      const k = Math.min(1, lvl);
+      if (k > instant[pc]) instant[pc] = k;
+    }
+  }
+
+  function applyView(): void {
+    river.ribbonMesh.visible = view === 'river';
+    river.bloomMesh.visible = view === 'river';
+    if (view !== 'river') {
+      under.begin();
+      under.end();
+    }
   }
 
   const viz: Visualizer = {
@@ -216,6 +241,18 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
       particles.mesh.visible = m === 'stress';
       bloomNode.strength.value = m === 'stress' ? BLOOM_STRENGTH_STRESS : BLOOM_STRENGTH;
       if (m !== 'flash') renderer.setClearColor(bgColor, 1);
+    },
+
+    setLayers(l) {
+      compass.setLayers(l);
+    },
+
+    setView(v) {
+      if (v === view) return;
+      view = v;
+      L.view = v;
+      applyView();
+      viz.resize(L.w, L.h, L.dpr);
     },
 
     resize(w, h, dpr) {
@@ -260,7 +297,8 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
       }
 
       particles.uTime.value = t;
-      drawRiverDecor(t);
+      computeInstant(t);
+      if (view === 'river') drawRiverDecor(t);
       over.begin();
       compass.draw(over, t, dt, instant, river.pedalDown);
       over.end();
@@ -272,6 +310,6 @@ export async function createVisualizer(canvas: HTMLCanvasElement): Promise<Visua
 
 /** Short labels drawn into the sprite atlas: 12 pitch-class names, then "PEDAL". */
 function atlasLabels(R: number) {
-  const pcFont = `500 ${Math.max(9, R * 0.075).toFixed(1)}px ${DISPLAY_FONT}`;
+  const pcFont = `500 ${Math.max(9, R * 0.07).toFixed(1)}px ${DISPLAY_FONT}`;
   return [...PC_NAMES.map((text) => ({ text, font: pcFont })), { text: 'PEDAL', font: `500 11px ${MONO_FONT}` }];
 }

@@ -84,6 +84,9 @@ interface Slot {
   tex: CanvasTexture;
   opacity: { value: number };
   mesh: Mesh;
+  /** Where this slot's content was placed (center, CSS px, y-up). */
+  x: number;
+  y: number;
 }
 
 export class TextLayer {
@@ -123,7 +126,7 @@ export class TextLayer {
       mesh.renderOrder = renderOrder;
       mesh.visible = false;
       scene.add(mesh);
-      this.slots.push({ canvas, ctx, node, tex, opacity, mesh });
+      this.slots.push({ canvas, ctx, node, tex, opacity, mesh, x: 0, y: 0 });
     }
   }
 
@@ -132,10 +135,24 @@ export class TextLayer {
     this.dirty = true;
   }
 
+  /**
+   * Where the next content goes (center, CSS px, y-up). The outgoing text keeps
+   * its own position, so a label that moves fades out in place and fades in at
+   * the new spot.
+   */
+  at(cx: number, cy: number): void {
+    this.cx = cx;
+    this.cy = cy;
+  }
+
   /** Position (center, CSS px, y-up) and size. Re-allocates canvases only when the size changes. */
   place(cx: number, cy: number, w: number, h: number, dpr: number): void {
     this.cx = cx;
     this.cy = cy;
+    for (const s of this.slots) {
+      s.x = cx;
+      s.y = cy;
+    }
     w = Math.ceil(w);
     h = Math.ceil(h);
     if (w === this.w && h === this.h && dpr === this.dpr) return;
@@ -161,7 +178,10 @@ export class TextLayer {
     if (this.dirty) {
       this.dirty = false;
       this.cur = 1 - this.cur;
-      this.paint(this.slots[this.cur]);
+      const s = this.slots[this.cur];
+      s.x = this.cx;
+      s.y = this.cy;
+      this.paint(s);
       this.changeT = t;
     }
     const k = t - this.changeT;
@@ -174,13 +194,13 @@ export class TextLayer {
     const n = this.slots[this.cur];
     n.opacity.value = ein * this.opacity;
     n.mesh.visible = n.opacity.value > 0.001;
-    n.mesh.position.set(this.cx, this.cy - (1 - ein) * T.inRise, 0);
+    n.mesh.position.set(n.x, n.y - (1 - ein) * T.inRise, 0);
 
     const o = this.slots[1 - this.cur];
     const oo = (1 - eout) * this.opacity;
     o.opacity.value = oo;
     o.mesh.visible = oo > 0.001;
-    o.mesh.position.set(this.cx, this.cy + eout * T.outRise, 0);
+    o.mesh.position.set(o.x, o.y + eout * T.outRise, 0);
   }
 
   private paint(s: Slot): void {
