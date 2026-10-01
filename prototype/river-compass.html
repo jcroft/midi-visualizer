@@ -1,0 +1,760 @@
+<title>River &amp; Compass</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one dark stage (deliberately single-theme, like a dimmed room), a slim control strip, a short key below. */
+:root {
+  --bg: #0b0c10;
+  --panel: #12141b;
+  --line: #262a36;
+  --fg: #e7e9f0;
+  --muted: #8a90a2;
+  --accent: #9fb8ff;
+  --display: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+html, body { background: var(--bg); color: var(--fg); }
+body { font-family: var(--display); font-size: 15px; line-height: 1.5; padding-inline: 16px; padding-block: 20px 40px; }
+.wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 14px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 20px; }
+h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); font-size: 14px; margin: 0; }
+.stage { position: relative; width: 100%; aspect-ratio: 16 / 9; max-width: 100%; border-radius: 10px; overflow: hidden; background: var(--bg); border: 1px solid var(--line); }
+@media (max-width: 700px) { .stage { aspect-ratio: 3 / 4; } }
+canvas { display: block; width: 100%; height: 100%; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+button { font: 500 13px/1 var(--display); color: var(--fg); background: var(--panel); border: 0; padding: 9px 14px; cursor: pointer; letter-spacing: 0.01em; }
+button[aria-pressed="true"] { background: #232a3d; color: #fff; }
+button:hover { background: #1b1f2b; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.solo { border: 1px solid var(--line); border-radius: 8px; }
+.status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px 28px; color: var(--muted); font-size: 13.5px; }
+.legend b { color: var(--fg); font-weight: 600; display: block; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 2px; }
+.legend p { margin: 0; max-width: 60ch; }
+kbd { font-family: var(--mono); font-size: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; color: var(--fg); }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>River &amp; Compass</h1>
+    <p class="sub">Mockup v0.1 · a ii–V–I in C with roots, the same in B♭ rootless, then a bebop line</p>
+  </header>
+
+  <div class="stage"><canvas id="cv" aria-label="Animated visualization of piano notes and chords"></canvas></div>
+
+  <div class="controls">
+    <button id="play" class="solo" aria-pressed="true">Pause demo</button>
+    <button id="sound" class="solo" aria-pressed="false">Sound off</button>
+    <span class="status" id="status">Play along: <kbd>A</kbd>–<kbd>K</kbd> keys = C4–C5, <kbd>Z</kbd>/<kbd>X</kbd> octave, <kbd>Space</kbd> = sustain pedal</span>
+  </div>
+
+  <div class="legend">
+    <p><b>River</b>Notes bloom at the light keyboard and flow left. Height is pitch, thickness is velocity, color is pitch class around the circle of fifths. Faint tails are notes the sustain pedal is still holding.</p>
+    <p><b>Compass</b>Twelve pitch classes in circle-of-fifths order. Sounding notes light up and connect. A hollow ring marks a root you didn't play. The outer arc is the key; a dashed arc means a ii–V has implied a key that hasn't arrived yet.</p>
+    <p><b>Chord name</b>Calm on purpose: it changes only when a new reading holds for a moment. When a voicing is ambiguous, the runner-up shows faintly underneath.</p>
+    <p><b>Next chord</b>Up to three dotted guesses at where the harmony goes next, each with its reason and likelihood. Land on one and it ripples.</p>
+  </div>
+</div>
+
+<script>
+// Pure chord / key / prediction logic for the mockup. No DOM.
+const PC_NAMES = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
+const mod12 = (n) => ((n % 12) + 12) % 12;
+
+// req: must be present; opt: extensions that cost little; base: quality family
+const TEMPLATES = [
+  { q: 'maj7', req: [4, 11], opt: [7, 2, 9, 6], prior: 0 },
+  { q: '6', req: [4, 9], opt: [7, 2], prior: -0.15 },
+  { q: 'm7', req: [3, 10], opt: [7, 2, 5, 9], prior: 0 },
+  { q: 'm6', req: [3, 9], opt: [7, 2], prior: -0.2 },
+  { q: 'mMaj7', req: [3, 11], opt: [7, 2], prior: -0.3 },
+  { q: '7', req: [4, 10], opt: [7, 2, 9, 1, 3, 8, 6], prior: 0 },
+  { q: 'm7b5', req: [3, 6, 10], opt: [2, 5, 8], prior: 0.1 },
+  { q: 'dim7', req: [3, 6, 9], opt: [2, 11], prior: 0.1 },
+  { q: '7sus4', req: [5, 10], opt: [7, 2, 9], prior: -0.2 },
+  { q: 'maj', req: [4, 7], opt: [2, 9], prior: -0.5 },
+  { q: 'min', req: [3, 7], opt: [2], prior: -0.5 },
+];
+
+const ROOTLESS = {
+  m7: [[3, 7, 10, 2], [3, 10, 2]],
+  '7': [[4, 9, 10, 2], [4, 10, 2, 7], [4, 10, 2], [4, 9, 10]],
+  maj7: [[4, 7, 11, 2], [4, 11, 2], [4, 7, 9, 2]],
+};
+const has0 = (w) => w(0) > 0.3;
+
+// Lead-sheet text for a quality given which extensions are present.
+function qualityText(q, has) {
+  switch (q) {
+    case 'maj7':
+      if (has(6)) return has(2) ? 'Δ9(♯11)' : 'Δ7(♯11)';
+      return has(2) ? 'Δ9' : 'Δ7';
+    case '6': return has(2) ? '6/9' : '6';
+    case 'm7':
+      if (has(5)) return '–11';
+      return has(2) ? '–9' : '–7';
+    case 'm6': return '–6';
+    case 'mMaj7': return '–Δ7';
+    case '7': {
+      const alts = [1, 3, 8].filter(has).length + (has(6) && !has(7) ? 1 : 0);
+      if (alts >= 2) return '7alt';
+      const altTxt = [has(1) && '♭9', has(3) && '♯9', has(6) && '♯11', has(8) && '♭13'].filter(Boolean);
+      if (altTxt.length) return '7(' + altTxt.join('') + ')';
+      if (has(9)) return '13';
+      return has(2) ? '9' : '7';
+    }
+    case 'm7b5': return 'ø7';
+    case 'dim7': return '°7';
+    case '7sus4': return has(9) ? '13sus' : has(2) ? '9sus' : '7sus4';
+    case 'maj': return '';
+    case 'min': return '–';
+  }
+  return q;
+}
+
+// Roman numeral relative to a major key.
+const DEGREES = { 0: 'I', 1: '♭II', 2: 'II', 3: '♭III', 4: 'III', 5: 'IV', 6: '♯IV', 7: 'V', 8: '♭VI', 9: 'VI', 10: '♭VII', 11: 'VII' };
+function roman(root, q, key) {
+  let r = DEGREES[mod12(root - key)];
+  const minorish = ['m7', 'm6', 'mMaj7', 'min', 'm7b5', 'dim7'].includes(q);
+  if (minorish) r = r.toLowerCase();
+  const suf = { maj7: 'Δ7', '6': '6', m7: '7', m6: '6', mMaj7: 'Δ7', '7': '7', m7b5: 'ø7', dim7: '°7', '7sus4': '7sus', maj: '', min: '' }[q];
+  return r + suf;
+}
+
+/**
+ * Score every (root, template) against a pitch-class pool.
+ * pool: Float array[12] of weights 0..1; bass: pc or null; ctx: {prev:{root,q}|null, key}
+ * Returns ranked candidates [{root, q, name, score, conf}].
+ */
+function recognize(pool, bass, ctx) {
+  const active = [];
+  for (let pc = 0; pc < 12; pc++) if (pool[pc] > 0.3) active.push(pc);
+  if (active.length < 2) return [];
+  const total = active.reduce((s, pc) => s + pool[pc], 0);
+  const cands = [];
+  for (let root = 0; root < 12; root++) {
+    for (const t of TEMPLATES) {
+      const w = (iv) => pool[mod12(root + iv)];
+      let missing = 0, reqW = 0;
+      for (const iv of t.req) { reqW += w(iv); if (w(iv) < 0.3) missing++; }
+      if (missing) continue;
+      let explained = w(0) + reqW;
+      let optW = 0;
+      for (const iv of t.opt) optW += w(iv);
+      explained += optW;
+      const unexplained = Math.max(0, total - explained);
+      let score = reqW * 2 + optW * 0.45 + w(0) * 0.9 - unexplained * 2.2 + t.prior;
+      // Rootless A/B voicings (3-5-7-9, 3-13-7-9): the pianist's root is implied.
+      const rel = new Set(active.map((pc) => mod12(pc - root)));
+      const isForm = (form) => rel.size === form.length && form.every((iv) => rel.has(iv));
+      if (!has0(w) && ROOTLESS[t.q] && ROOTLESS[t.q].some(isForm)) score += 1.3;
+      if (t.q === 'maj7' && w(6) > 0.3) score -= 0.35; // ♯11 is rarer than a rootless reading
+      if (bass != null) {
+        if (bass === root) score += 0.9;
+        else if (![...t.req, ...t.opt].includes(mod12(bass - root))) score -= 0.6;
+      }
+      if (ctx && ctx.prev) {
+        const motion = mod12(root - ctx.prev.root);
+        if (motion === 5) {
+          score += 0.5; // down a fifth
+          if (['m7', 'm7b5'].includes(ctx.prev.q) && t.q === '7') score += 0.9; // ii–V
+          if (ctx.prev.q === '7' && ['maj7', '6', 'm7', 'maj'].includes(t.q)) score += 0.6; // V–I
+        }
+        if (motion === 11 && ctx.prev.q === '7' && ['maj7', '6'].includes(t.q)) score += 0.4; // tritone-sub resolution
+      }
+      if (ctx && ctx.key != null) {
+        const deg = mod12(root - ctx.key);
+        const diatonic = { 0: ['maj7', '6', 'maj'], 2: ['m7', 'min'], 4: ['m7', 'min'], 5: ['maj7', '6', 'maj'], 7: ['7', 'maj', '7sus4'], 9: ['m7', 'min'], 11: ['m7b5'] }[deg];
+        if (diatonic && diatonic.includes(t.q)) score += 0.3;
+      }
+      const has = (iv) => w(iv) > 0.3;
+      let name = PC_NAMES[root] + qualityText(t.q, has);
+      if (bass != null && bass !== root && !t.req.includes(mod12(bass - root)) && mod12(bass - root) !== 7) {
+        name += '/' + PC_NAMES[bass];
+      }
+      cands.push({ root, q: t.q, name, score, rootPlayed: has(0) });
+    }
+  }
+  cands.sort((a, b) => b.score - a.score);
+  // Softmax-ish confidence over the top few.
+  const top = cands.slice(0, 4);
+  const z = top.reduce((s, c) => s + Math.exp(c.score * 1.6), 0);
+  top.forEach((c) => (c.conf = Math.exp(c.score * 1.6) / z));
+  return cands; // ranked; conf set on the top four
+}
+
+// Local key from functional patterns over chord events (most recent last).
+function inferKey(events, current) {
+  const ev = events.slice(-3);
+  const last = ev[ev.length - 1], prev = ev[ev.length - 2];
+  if (!last) return current;
+  if (prev && ['m7', 'm7b5'].includes(prev.q) && last.q === '7' && mod12(last.root - prev.root) === 5) {
+    return { key: mod12(last.root + 5), implied: true };
+  }
+  if (prev && prev.q === '7' && ['maj7', '6', 'maj'].includes(last.q) && [5, 11].includes(mod12(last.root - prev.root))) {
+    return { key: last.root, implied: false };
+  }
+  if (['maj7', '6'].includes(last.q) && current.implied && current.key === last.root) {
+    return { key: last.root, implied: false };
+  }
+  return current;
+}
+
+function predict(chord, key) {
+  if (!chord) return [];
+  const r = chord.root;
+  const P = (dr, q, p, why) => ({ root: mod12(r + dr), q, p, why, name: PC_NAMES[mod12(r + dr)] + qualityText(q, () => false) });
+  switch (chord.q) {
+    case 'm7':
+      return [P(5, '7', 0.6, 'ii–V pull'), P(11, '7', 0.18, 'tritone sub'), P(1, 'm7', 0.1, 'side-slip up')];
+    case 'm7b5':
+      return [P(5, '7', 0.65, 'minor ii–V'), P(11, '7', 0.15, 'tritone sub')];
+    case '7': case '7sus4':
+      return [P(5, 'maj7', 0.55, 'V–I'), P(6, '7', 0.15, 'tritone sub'), P(2, 'm7', 0.12, 'deceptive (vi)')];
+    case 'maj7': case '6': case 'maj':
+      return [P(9, '7', 0.35, 'turnaround VI7'), P(2, 'm7', 0.3, 'back to ii'), P(5, 'm7', 0.15, 'backdoor iv')];
+    default:
+      return [P(5, '7', 0.5, 'down a fifth')];
+  }
+}
+
+
+</script>
+<script>
+(() => {
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  const r = cv.getBoundingClientRect();
+  W = r.width; H = r.height;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+new ResizeObserver(resize).observe(cv);
+resize();
+
+// ---------- color ----------
+const FIFTHS = (pc) => (pc * 7) % 12;            // position on circle of fifths
+const hueOf = (pc) => (FIFTHS(pc) * 30 + 250) % 360; // C sits in blue-violet
+const col = (pc, L, C, a = 1) => `oklch(${L} ${C} ${hueOf(pc)} / ${a})`;
+
+// ---------- note state ----------
+const LO = 33, HI = 98;
+const notes = new Map();   // midi -> {vel, t0, held}
+const ribbons = [];        // {midi, vel, t0, tKey, tEnd}
+const blooms = [];         // {midi, vel, t, scale}
+const pool = new Array(12).fill(0);
+let pedal = false;
+let recentOnsets = [];
+const now = () => performance.now() / 1000;
+
+function noteOn(midi, vel) {
+  const t = now();
+  const existing = notes.get(midi);
+  if (existing && existing.rib && existing.rib.tEnd == null) existing.rib.tEnd = t;
+  const rib = { midi, vel, t0: t, tKey: null, tEnd: null };
+  ribbons.push(rib);
+  notes.set(midi, { vel, t0: t, held: true, rib });
+  recentOnsets = recentOnsets.filter((x) => t - x < 0.25); recentOnsets.push(t);
+  // 3+ notes landing together is a new chord: clear the residue of the old one and re-read freely.
+  if (recentOnsets.filter((x) => t - x < 0.06).length >= 3 && t - freshT > 0.3) {
+    freshT = t;
+    const heldPcs = new Set([...notes].filter(([, n]) => n.held).map(([m]) => m % 12));
+    for (let pc = 0; pc < 12; pc++) if (!heldPcs.has(pc)) pool[pc] *= 0.15;
+  }
+  blooms.push({ midi, vel, t, scale: 1 / Math.sqrt(recentOnsets.length) });
+  pool[midi % 12] = Math.max(pool[midi % 12], 0.35);
+  audioOn(midi, vel);
+}
+function noteOff(midi) {
+  const n = notes.get(midi); if (!n) return;
+  const t = now();
+  n.held = false; n.rib.tKey = t;
+  if (!pedal) { n.rib.tEnd = t; notes.delete(midi); audioOff(midi); }
+}
+function setPedal(down) {
+  pedal = down;
+  if (!down) {
+    const t = now();
+    for (const [m, n] of notes) if (!n.held) { n.rib.tEnd = t; notes.delete(m); audioOff(m); }
+  }
+}
+function allOff() { for (const m of [...notes.keys()]) { const n = notes.get(m); n.held = false; } setPedal(false); }
+
+// ---------- harmony state ----------
+let chord = null, label = null, prevLabel = null, labelT = 0, ghost = null;
+let pending = null;
+let freshT = -1;
+const chordEvents = []; // {root,q,name,t0,t1}
+let keyState = { key: 0, implied: false };
+let preds = [];
+const ripples = [];
+let keyChangeT = 0;
+
+function updateHarmony(dt) {
+  const t = now();
+  let lowest = 999;
+  const older = (n) => [...notes.values()].filter((o) => n.t0 - o.t0 > 0.3).length;
+  for (const [m, n] of notes) {
+    const age = t - n.t0;
+    // A lone, recent note over an established voicing is melody: it colors the chord but can't redefine it.
+    const lone = ![...notes.values()].some((o) => o !== n && Math.abs(o.t0 - n.t0) < 0.06);
+    const melody = lone && age < 0.6 && older(n) >= 3;
+    const target = melody ? 0.22 : n.held ? (age > 0.12 ? 1 : 0.4) : (age > 0.12 ? 0.75 : 0.3);
+    const pc = m % 12;
+    pool[pc] = melody ? pool[pc] + (target - pool[pc]) * Math.min(1, dt * 8) : Math.max(pool[pc], Math.min(target, pool[pc] + dt * 6));
+    if (m < lowest) lowest = m;
+  }
+  const sounding = new Set([...notes.keys()].map((m) => m % 12));
+  for (let pc = 0; pc < 12; pc++) if (!sounding.has(pc)) pool[pc] *= Math.exp(-dt / 0.35);
+  const bass = lowest < 55 ? lowest % 12 : null;
+  const cands = recognize(pool, bass, { prev: chordEvents.length ? chordEvents[chordEvents.length - 1] : null, key: keyState.key });
+  const best = cands[0];
+  if (!best) { pending = null; return; }
+  // Hysteresis: a new reading has to clearly beat the current one, re-scored on the same notes.
+  if (chord && t - freshT > 0.35 && !(best.root === chord.root && best.q === chord.q)) {
+    const cur = cands.find((c) => c.root === chord.root && c.q === chord.q);
+    if (cur && best.score < cur.score + 0.6) { pending = null; return; }
+  }
+  const same = chord && best.root === chord.root && best.q === chord.q;
+  if (same) {
+    if (best.name !== chord.name) { chord.name = best.name; setLabel(best); }
+    chord.conf = best.conf; ghost = cands[1] && cands[1].conf > 0.2 ? cands[1] : null;
+    pending = null; return;
+  }
+  if (!pending || pending.root !== best.root || pending.q !== best.q) { pending = { ...best, since: t }; return; }
+  if (t - pending.since < 0.12) return;
+  // commit chord change
+  const t0 = pending.since;
+  if (chordEvents.length) chordEvents[chordEvents.length - 1].t1 = t0;
+  const hit = preds.find((p) => p.root === best.root);
+  if (hit && studyMode) ripples.push({ root: best.root, t });
+  chord = { root: best.root, q: best.q, name: best.name, conf: best.conf, rootPlayed: best.rootPlayed };
+  chordEvents.push({ root: best.root, q: best.q, name: best.name, t0, t1: null });
+  if (chordEvents.length > 40) chordEvents.shift();
+  ghost = cands[1] && cands[1].conf > 0.2 ? cands[1] : null;
+  setLabel(best);
+  const k = inferKey(chordEvents, keyState);
+  if (k.key !== keyState.key || k.implied !== keyState.implied) keyChangeT = t;
+  keyState = k;
+  preds = [];
+  setTimeout(() => { preds = predict(chord, keyState.key); predT = now(); }, 220);
+  pending = null;
+}
+let predT = 0;
+function setLabel(c) { if (!label || label.name !== c.name) { prevLabel = label; label = { name: c.name, root: c.root }; labelT = now(); } }
+
+// ---------- springs ----------
+const spring = (s, target, dt, w) => { const a = w * w * (target - s.x) - 2 * w * s.v; s.v += a * dt; s.x += s.v * dt; };
+const angOf = (pc) => -Math.PI / 2 + FIFTHS(pc) * Math.PI / 6;
+const nearest = (cur, target) => { let d = target - cur; d = Math.atan2(Math.sin(d), Math.cos(d)); return cur + d; };
+const needle = { x: angOf(2), v: 0 };
+const keyArc = { x: angOf(0), v: 0 };
+
+// ---------- drawing ----------
+function layout() {
+  if (W < 640) {
+    const rh = H * 0.5;
+    return { river: { x: 0, y: 0, w: W, h: rh }, nowX: W * 0.8, comp: { cx: W / 2, cy: rh + (H - rh) / 2 + 6, R: Math.min(W, H - rh) * 0.3 } };
+  }
+  const nowX = W * 0.6;
+  const cw = W - nowX;
+  return { river: { x: 0, y: 0, w: W, h: H }, nowX, comp: { cx: nowX + cw * 0.5, cy: H * 0.55, R: Math.min(cw * 0.25, H * 0.27) } };
+}
+const yOf = (m, r) => r.y + r.h * 0.06 + (HI - m) / (HI - LO) * r.h * 0.88;
+
+function draw(dt) {
+  const t = now();
+  const L = layout();
+  const { river: rv, nowX, comp } = L;
+  const pps = Math.max(70, W * 0.085); // pixels per second
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#0b0c10'; ctx.fillRect(0, 0, W, H);
+
+  // chord bands in the river
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, rv.y, nowX, rv.h); ctx.clip();
+  for (const ev of chordEvents) {
+    const x0 = nowX - (t - ev.t0) * pps, x1 = ev.t1 == null ? nowX : nowX - (t - ev.t1) * pps;
+    if (x1 < 0) continue;
+    const g = ctx.createLinearGradient(x0, 0, x1, 0);
+    g.addColorStop(0, col(ev.root, 0.3, 0.06, 0.0));
+    g.addColorStop(Math.min(0.5, 30 / Math.max(1, x1 - x0)), col(ev.root, 0.3, 0.06, 0.45));
+    g.addColorStop(1, col(ev.root, 0.3, 0.06, 0.45));
+    ctx.fillStyle = g; ctx.fillRect(x0, rv.y, x1 - x0, rv.h);
+    ctx.fillStyle = col(ev.root, 0.82, 0.07, 0.75);
+    ctx.font = `500 ${Math.max(11, W * 0.011)}px ${'"Schibsted Grotesk", sans-serif'}`;
+    ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    if (ctx.measureText(ev.name).width + 16 < x1 - Math.max(0, x0)) ctx.fillText(ev.name, Math.max(0, x0) + 8, rv.y + 10);
+  }
+  // octave guides
+  ctx.strokeStyle = 'rgba(160,170,200,0.06)'; ctx.lineWidth = 1;
+  for (let m = 36; m <= 96; m += 12) { const y = yOf(m, rv); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(nowX, y); ctx.stroke(); }
+  // ribbons
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = ribbons.length - 1; i >= 0; i--) {
+    const r = ribbons[i];
+    const xEnd = r.tEnd == null ? nowX : nowX - (t - r.tEnd) * pps;
+    if (xEnd < -10) { ribbons.splice(i, 1); continue; }
+    const x0 = nowX - (t - r.t0) * pps;
+    const xKey = r.tKey == null ? xEnd : nowX - (t - r.tKey) * pps;
+    const y = yOf(r.midi, rv), th = 1.5 + r.vel * 5 * (W / 1200);
+    const pc = r.midi % 12;
+    ctx.fillStyle = col(pc, 0.74, 0.11, 0.85);
+    ctx.fillRect(x0, y - th / 2, Math.max(1.5, xKey - x0), th);
+    if (xEnd > xKey + 1) { ctx.fillStyle = col(pc, 0.6, 0.08, 0.28); ctx.fillRect(xKey, y - th / 4, xEnd - xKey, th / 2); }
+    // attack cap
+    ctx.fillStyle = col(pc, 0.92, 0.08, 0.9); ctx.fillRect(x0, y - th / 2, 2, th);
+  }
+  ctx.restore();
+
+  // light keyboard on the now line
+  ctx.globalCompositeOperation = 'source-over';
+  const kx = nowX;
+  ctx.fillStyle = 'rgba(200,210,240,0.05)'; ctx.fillRect(kx - 6, rv.y, 12, rv.h);
+  ctx.strokeStyle = 'rgba(200,210,240,0.25)'; ctx.beginPath(); ctx.moveTo(kx, rv.y); ctx.lineTo(kx, rv.y + rv.h); ctx.stroke();
+  for (let m = LO; m <= HI; m++) {
+    const black = [1, 3, 6, 8, 10].includes(m % 12);
+    const y = yOf(m, rv);
+    const n = notes.get(m);
+    if (n) {
+      ctx.fillStyle = col(m % 12, n.held ? 0.85 : 0.62, 0.12, n.held ? 1 : 0.55);
+      ctx.fillRect(kx - 7, y - 2.5, 14, 5);
+    } else {
+      ctx.fillStyle = black ? 'rgba(200,210,240,0.10)' : 'rgba(200,210,240,0.22)';
+      ctx.fillRect(kx - (black ? 2 : 4), y - 0.5, black ? 4 : 8, 1);
+    }
+  }
+  // blooms
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = blooms.length - 1; i >= 0; i--) {
+    const b = blooms[i], age = t - b.t;
+    const a = Math.exp(-age / 0.28);
+    if (a < 0.02) { blooms.splice(i, 1); continue; }
+    const y = yOf(b.midi, rv);
+    const rad = (14 + b.vel * 46) * (W / 1200 + 0.3) * b.scale * (reduceMotion ? 0.5 : 1) * (1 + age * 1.5);
+    const g = ctx.createRadialGradient(kx, y, 0, kx, y, rad);
+    g.addColorStop(0, col(b.midi % 12, 0.95, 0.1, 0.9 * a));
+    g.addColorStop(0.25, col(b.midi % 12, 0.75, 0.15, 0.45 * a));
+    g.addColorStop(1, col(b.midi % 12, 0.5, 0.12, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(kx, y, rad, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  // pedal indicator
+  ctx.font = `500 11px "IBM Plex Mono", monospace`; ctx.textBaseline = 'bottom'; ctx.textAlign = 'left';
+  ctx.fillStyle = pedal ? 'rgba(220,228,255,0.85)' : 'rgba(160,170,200,0.35)';
+  ctx.fillText(pedal ? 'PEDAL ●' : 'PEDAL ○', 14, H - 12);
+
+  drawCompass(comp, t, dt);
+}
+
+function drawCompass({ cx, cy, R }, t, dt) {
+  // key arc
+  spring(keyArc, nearest(keyArc.x, angOf(keyState.key)), dt, 6);
+  const step = Math.PI / 6;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(6, R * 0.07);
+  ctx.strokeStyle = col(keyState.key, 0.5, 0.06, 0.55);
+  if (keyState.implied) ctx.setLineDash([R * 0.05, R * 0.06]);
+  ctx.beginPath(); ctx.arc(cx, cy, R * 1.2, keyArc.x - step * 1.4, keyArc.x + step * 5.4); ctx.stroke();
+  ctx.setLineDash([]);
+  const flash = Math.exp(-(t - keyChangeT) / 0.6);
+  ctx.strokeStyle = col(keyState.key, 0.85, 0.1, 0.5 + 0.5 * flash);
+  ctx.beginPath(); ctx.arc(cx, cy, R * 1.2, keyArc.x - 0.13, keyArc.x + 0.13); ctx.stroke();
+  ctx.restore();
+
+  // key label
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.font = `500 ${Math.max(10, R * 0.085)}px "IBM Plex Mono", monospace`;
+  ctx.fillStyle = 'rgba(200,208,230,0.7)';
+  const kname = PC_NAMES[keyState.key];
+  const ktxt = `KEY · ${kname} MAJOR${keyState.implied ? ' (IMPLIED)' : ''}`;
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
+  ctx.fillText(ktxt, cx, cy - R * 1.78);
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+
+  // ring
+  ctx.strokeStyle = 'rgba(180,190,220,0.14)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+
+  const pos = (pc, rr = R) => [cx + Math.cos(angOf(pc)) * rr, cy + Math.sin(angOf(pc)) * rr];
+
+  // predictions (Study)
+  if (studyMode && chord && preds.length) {
+    const a = Math.min(1, (t - predT) / 0.2);
+    for (const p of preds) {
+      const [x0, y0] = pos(chord.root), [x1, y1] = pos(p.root);
+      const mx = (x0 + x1) / 2 - cx, my = (y0 + y1) / 2 - cy;
+      const ml = Math.hypot(mx, my) || 1;
+      const bulge = R * 1.55;
+      const qx = cx + mx / ml * bulge, qy = cy + my / ml * bulge;
+      const op = (0.12 + p.p * 0.6) * a;
+      ctx.setLineDash([2, 5]); ctx.lineWidth = p === preds[0] ? 1.6 : 1;
+      ctx.strokeStyle = col(p.root, 0.8, 0.08, op);
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(qx, qy, x1, y1); ctx.stroke();
+      ctx.setLineDash([]);
+      const [lx, ly] = pos(p.root, R * 1.42);
+      ctx.font = `500 ${Math.max(10, R * 0.1)}px "Schibsted Grotesk", sans-serif`;
+      ctx.lineWidth = 1; ctx.strokeStyle = col(p.root, 0.85, 0.08, Math.min(1, op * 1.8));
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.strokeText(p.name, lx, ly);
+      ctx.font = `400 ${Math.max(9, R * 0.07)}px "IBM Plex Mono", monospace`;
+      ctx.fillStyle = `rgba(190,198,220,${Math.min(1, op * 1.5)})`;
+      ctx.fillText(`${Math.round(p.p * 100)}% ${p.why}`, lx, ly + R * 0.11);
+    }
+  }
+
+  // polygon of sounding pitch classes
+  const lit = [];
+  for (let pc = 0; pc < 12; pc++) if (pool[pc] > 0.25) lit.push(pc);
+  lit.sort((a, b) => FIFTHS(a) - FIFTHS(b));
+  if (lit.length >= 3 && chord) {
+    ctx.beginPath();
+    lit.forEach((pc, i) => { const [x, y] = pos(pc); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.closePath();
+    ctx.fillStyle = col(chord.root, 0.45, 0.08, 0.16); ctx.fill();
+    ctx.strokeStyle = col(chord.root, 0.75, 0.1, 0.45); ctx.lineWidth = 1.2; ctx.stroke();
+  }
+  // tritone shimmer
+  for (const a of lit) for (const b of lit) if (a < b && (b - a) === 6 && pool[a] > 0.5 && pool[b] > 0.5) {
+    const [x0, y0] = pos(a), [x1, y1] = pos(b);
+    const s = 0.35 + 0.25 * Math.sin(t * 18);
+    ctx.strokeStyle = `rgba(255,244,230,${s})`; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  }
+  // nodes
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let pc = 0; pc < 12; pc++) {
+    const [x, y] = pos(pc);
+    const w = pool[pc];
+    if (w > 0.05) {
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(x, y, 0, x, y, R * 0.18 * w + 4);
+      g.addColorStop(0, col(pc, 0.92, 0.12, 0.85 * w)); g.addColorStop(1, col(pc, 0.6, 0.12, 0));
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, R * 0.18 * w + 4, 0, Math.PI * 2); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.fillStyle = w > 0.05 ? col(pc, 0.6 + 0.35 * w, 0.12, 1) : 'rgba(150,160,190,0.35)';
+    ctx.beginPath(); ctx.arc(x, y, 3 + 4 * w, 0, Math.PI * 2); ctx.fill();
+    const [lx, ly] = pos(pc, R * 0.84);
+    ctx.font = `500 ${Math.max(9, R * 0.075)}px "Schibsted Grotesk", sans-serif`;
+    ctx.fillStyle = w > 0.25 ? 'rgba(235,238,248,0.9)' : 'rgba(150,160,190,0.45)';
+    ctx.fillText(PC_NAMES[pc], lx, ly);
+  }
+  // inferred (unplayed) root
+  if (chord && pool[chord.root] < 0.12) {
+    const [x, y] = pos(chord.root);
+    ctx.strokeStyle = col(chord.root, 0.88, 0.1, 0.9); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.stroke();
+  }
+  // needle
+  if (chord) {
+    spring(needle, nearest(needle.x, angOf(chord.root)), dt, 9);
+    const a = needle.x;
+    ctx.strokeStyle = col(chord.root, 0.9, 0.1, 0.9); ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.07, a - 0.09, a + 0.09); ctx.stroke();
+  }
+  // ripples (landed on a predicted chord)
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const rp = ripples[i], age = t - rp.t;
+    if (age > 0.6) { ripples.splice(i, 1); continue; }
+    const [x, y] = pos(rp.root);
+    ctx.strokeStyle = col(rp.root, 0.9, 0.1, 1 - age / 0.6); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, 8 + age * 70, 0, Math.PI * 2); ctx.stroke();
+  }
+  drawChordLabel(cx, cy, R, t);
+}
+
+function splitName(name) {
+  // root letter + accidental, then quality, then optional slash bass
+  const m = name.match(/^([A-G][♭♯]?)([^/]*)(\/.*)?$/);
+  return m ? [m[1], m[2], m[3] || ''] : [name, '', ''];
+}
+function drawLabelText(name, cx, cy, size, alpha, rise, faint) {
+  const [root, qual, slash] = splitName(name);
+  ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+  const rf = `${faint ? 500 : 600} ${size}px "Schibsted Grotesk", sans-serif`;
+  const qf = `${faint ? 400 : 500} ${size * 0.58}px "Schibsted Grotesk", sans-serif`;
+  ctx.font = rf; const rw = ctx.measureText(root).width;
+  ctx.font = qf; const qw = ctx.measureText(qual).width;
+  ctx.font = rf; const sw = ctx.measureText(slash).width;
+  const x = cx - (rw + qw + sw) / 2, y = cy + size * 0.33 - rise;
+  ctx.fillStyle = `rgba(240,242,250,${alpha})`;
+  ctx.font = rf; ctx.fillText(root, x, y);
+  ctx.font = qf; ctx.fillText(qual, x + rw + 1, y - size * 0.4);
+  ctx.font = rf; ctx.fillText(slash, x + rw + qw + 2, y);
+}
+function drawChordLabel(cx, cy, R, t) {
+  const size = R * 0.36;
+  const age = t - labelT;
+  if (prevLabel && age < 0.12) drawLabelText(prevLabel.name, cx, cy, size, 1 - age / 0.12, age / 0.12 * 6, false);
+  if (label) {
+    const k = Math.min(1, age / 0.16), e = 1 - Math.pow(1 - k, 3);
+    const conf = chord ? chord.conf : 1;
+    const a = (conf < 0.5 ? 0.55 : 1) * e;
+    drawLabelText(label.name, cx, cy, size, a, -(1 - e) * 6, conf < 0.5);
+    if (ghost) {
+      ctx.font = `400 ${size * 0.34}px "Schibsted Grotesk", sans-serif`; ctx.textAlign = 'center';
+      ctx.fillStyle = `rgba(200,206,225,${0.4 * e})`;
+      ctx.fillText('or ' + ghost.name, cx, cy + size * 0.85);
+    }
+    if (studyMode && chord) {
+      ctx.font = `500 ${Math.max(10, size * 0.3)}px "IBM Plex Mono", monospace`; ctx.textAlign = 'center';
+      ctx.fillStyle = col(chord.root, 0.82, 0.08, 0.85 * e);
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
+      ctx.fillText(roman(chord.root, chord.q, keyState.key), cx, cy - size * 0.95);
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+    }
+  } else {
+    ctx.font = `400 ${size * 0.32}px "Schibsted Grotesk", sans-serif`; ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(160,168,190,0.5)'; ctx.fillText('play a chord', cx, cy);
+  }
+}
+
+// ---------- audio (optional, after a click) ----------
+let audio = null; const voices = new Map();
+function audioOn(m, v) {
+  if (!audio) return;
+  audioOff(m, true);
+  const t = audio.currentTime, f = 440 * Math.pow(2, (m - 69) / 12);
+  const g = audio.createGain(); g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(0.09 * (0.3 + v), t + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.03 * (0.3 + v), t + 1.6);
+  const o1 = audio.createOscillator(); o1.type = 'sine'; o1.frequency.value = f;
+  const o2 = audio.createOscillator(); o2.type = 'triangle'; o2.frequency.value = f * 2;
+  const g2 = audio.createGain(); g2.gain.value = 0.18;
+  o1.connect(g); o2.connect(g2).connect(g); g.connect(audio.master);
+  o1.start(t); o2.start(t);
+  voices.set(m, { g, o: [o1, o2] });
+}
+function audioOff(m, fast) {
+  const vc = voices.get(m); if (!vc || !audio) return;
+  const t = audio.currentTime;
+  vc.g.gain.cancelScheduledValues(t); vc.g.gain.setValueAtTime(vc.g.gain.value, t);
+  vc.g.gain.exponentialRampToValueAtTime(0.0001, t + (fast ? 0.03 : 0.35));
+  vc.o.forEach((o) => o.stop(t + (fast ? 0.05 : 0.4)));
+  voices.delete(m);
+}
+
+// ---------- demo performance ----------
+const B = 0.62; // seconds per beat
+function buildDemo() {
+  const ev = []; let t = 0.4;
+  const chordAt = (notesArr, beats, vel = 0.6, roll = 0.012) => {
+    notesArr.forEach((m, i) => ev.push([t + i * roll, 'on', m, vel + (Math.random() - 0.5) * 0.15]));
+    ev.push([t + 0.08, 'pedal', true]);
+    notesArr.forEach((m) => ev.push([t + beats * B - 0.06, 'off', m]));
+    ev.push([t + beats * B - 0.04, 'pedal', false]);
+    t += beats * B;
+  };
+  // ii–V–I in C, with roots
+  chordAt([38, 53, 57, 60, 64], 4, 0.55);
+  chordAt([43, 53, 59, 64, 69], 4, 0.62);
+  chordAt([36, 52, 55, 59, 62], 6, 0.5);
+  t += 0.6;
+  // same in B♭, rootless (left hand only)
+  chordAt([51, 55, 58, 62], 4, 0.5);
+  chordAt([51, 57, 62, 67], 4, 0.58);
+  // B♭Δ9 held while the right hand plays a bebop line
+  const lh = [50, 53, 57, 60];
+  lh.forEach((m, i) => ev.push([t + i * 0.012, 'on', m, 0.5]));
+  const line = [74, 72, 70, 69, 67, 65, 64, 65, 66, 67, 69, 70, 72, 74, 77, 76, 74, 73, 74, 72, 70];
+  const swing = [0.36, 0.22];
+  let lt = t + 0.5;
+  line.forEach((m, i) => { const d = swing[i % 2]; ev.push([lt, 'on', m, 0.55 + (i % 2 ? -0.1 : 0.12)]); ev.push([lt + d * 0.9, 'off', m]); lt += d; });
+  ev.push([lt + 0.2, 'on', 81, 0.7]); ev.push([lt + 1.6, 'off', 81]);
+  lh.forEach((m) => ev.push([lt + 2.2, 'off', m]));
+  t = lt + 4.2; // silence: let it breathe
+  ev.sort((a, b) => a[0] - b[0]);
+  return { ev, len: t };
+}
+let demo = buildDemo(), demoOn = true, demoStart = now(), demoIdx = 0;
+function runDemo() {
+  if (!demoOn) return;
+  const el = now() - demoStart;
+  while (demoIdx < demo.ev.length && demo.ev[demoIdx][0] <= el) {
+    const [, type, a, b] = demo.ev[demoIdx++];
+    if (type === 'on') noteOn(a, b); else if (type === 'off') noteOff(a); else setPedal(a);
+  }
+  if (el > demo.len) { demo = buildDemo(); demoStart = now(); demoIdx = 0; }
+}
+
+// ---------- input: computer keyboard + Web MIDI ----------
+const KEYMAP = 'awsedftgyhujk'; let octave = 60;
+const downKeys = new Set();
+function stopDemo() { if (demoOn) { demoOn = false; allOff(); syncButtons(); } }
+addEventListener('keydown', (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('button') && e.key === ' ') { if (e.key !== ' ') return; }
+  const k = e.key.toLowerCase();
+  if (k === ' ') { e.preventDefault(); if (!e.repeat) { stopDemo(); setPedal(true); } return; }
+  if (k === 'z') { octave = Math.max(36, octave - 12); return; }
+  if (k === 'x') { octave = Math.min(84, octave + 12); return; }
+  const i = KEYMAP.indexOf(k);
+  if (i >= 0 && !e.repeat) { stopDemo(); downKeys.add(k); noteOn(octave + i, 0.65); }
+});
+addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === ' ') { setPedal(false); return; }
+  const i = KEYMAP.indexOf(k);
+  if (i >= 0 && downKeys.has(k)) { downKeys.delete(k); noteOff(octave + i); }
+});
+const statusEl = document.getElementById('status');
+if (navigator.requestMIDIAccess) {
+  navigator.requestMIDIAccess().then((acc) => {
+    const hook = () => {
+      let names = [];
+      acc.inputs.forEach((inp) => { names.push(inp.name); inp.onmidimessage = (msg) => {
+        const [s, d1, d2] = msg.data; const type = s & 0xf0;
+        if (type === 0x90 && d2 > 0) { stopDemo(); noteOn(d1, d2 / 127); }
+        else if (type === 0x80 || (type === 0x90 && d2 === 0)) noteOff(d1);
+        else if (type === 0xb0 && d1 === 64) { stopDemo(); setPedal(d2 >= 64); }
+      }; });
+      if (names.length) statusEl.textContent = 'MIDI connected: ' + names.join(', ');
+    };
+    hook(); acc.onstatechange = hook;
+  }).catch(() => {});
+}
+
+// ---------- controls ----------
+const studyMode = true; // one mode: everything on
+const $ = (id) => document.getElementById(id);
+function syncButtons() {
+  $('play').textContent = demoOn ? 'Pause demo' : 'Play demo';
+  $('play').setAttribute('aria-pressed', String(demoOn));
+  $('sound').textContent = audio && audio.state === 'running' ? 'Sound on' : 'Sound off';
+  $('sound').setAttribute('aria-pressed', String(!!audio && audio.state === 'running'));
+}
+$('play').onclick = () => {
+  if (demoOn) { demoOn = false; allOff(); }
+  else { demoOn = true; demo = buildDemo(); demoStart = now(); demoIdx = 0; }
+  syncButtons();
+};
+$('sound').onclick = async () => {
+  if (!audio) {
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+    audio.master = audio.createGain(); audio.master.gain.value = 0.8;
+    const comp = audio.createDynamicsCompressor(); audio.master.connect(comp).connect(audio.destination);
+  } else if (audio.state === 'running') { await audio.suspend(); syncButtons(); return; }
+  await audio.resume(); syncButtons();
+};
+
+// ---------- loop ----------
+let last = now();
+function frame() {
+  const t = now(); const dt = Math.min(0.05, t - last); last = t;
+  runDemo();
+  updateHarmony(dt);
+  draw(dt);
+  requestAnimationFrame(frame);
+}
+(document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(() => requestAnimationFrame(frame));
+})();
+</script>

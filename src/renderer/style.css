@@ -1,0 +1,16 @@
+:root {
+  --bg: #0b0c10;
+  --fg: #e8e6e3;
+  --dim: #8a8f98;
+  --line: rgba(255, 255, 255, 0.08);
+  --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  --sans: -apple-system, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+}
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: var(--sans); overflow: hidden; }
+#stage { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+#hud { position: fixed; top: 12px; left: 12px; font: 11px/1.45 var(--mono); color: var(--dim); pointer-events: none; white-space: pre; }
+#chrome { position: fixed; left: 12px; bottom: 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font: 12px var(--sans); transition: opacity 0.4s; }
+#chrome.idle { opacity: 0; }
+#chrome button, #chrome select { background: rgba(255,255,255,0.04); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+#chrome button.on { border-color: rgba(255,255,255,0.4); background: rgba(255,255,255,0.12); }
+#chrome .note { color: var(--dim); }

@@ -1,0 +1,30 @@
+{
+  "name": "midi-visualizer",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Live MIDI visualizer for jazz piano: River + Compass. Latency spike.",
+  "main": "./out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "package": "electron-vite build && electron-builder --mac --dir"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/three": "^0.186.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "@tonejs/midi": "^2.0.28",
+    "three": "^0.186.1"
+  }
+}
