@@ -15,7 +15,7 @@ import {
   qualityText,
   scoreAll,
 } from './chords';
-import { GlobalKey, diatonic, roman } from './key';
+import { KeyTracker, diatonic, roman } from './key';
 import { mod12, keyLabel, parentMajor, spell, type KeyLike, type Mode } from './pitch';
 import { type ChordEvent, predict } from './predict';
 
@@ -30,6 +30,8 @@ const HOLD_REFINE_MS = 90; // same root/function, different extensions
 const STICKY_SAME = 0.4;
 const STICKY_ROOT = 0.2;
 const LOCAL_KEY_TTL = 16000;
+const LOCAL_MISS_IMPLIED = 2; // an unresolved ii–V's key lapses after this many unrelated chords
+const LOCAL_MISS = 3;
 const MODAL_MS = 4000;
 const CONF_K = 1.4;
 const YOUNG_MS = 150;
@@ -47,6 +49,8 @@ interface Reading {
 interface LocalKey extends KeyLike {
   implied: boolean;
   t: number;
+  /** Consecutive chord events that don't belong to this local key. */
+  miss: number;
 }
 
 export interface Analyzer {
@@ -75,7 +79,8 @@ class AnalyzerImpl implements Analyzer {
   private readonly inOnsets = new Uint8Array(128);
   private readonly held = new Uint8Array(128);
   private readonly notes: number[] = []; // sorted, reused
-  private readonly gkey = new GlobalKey();
+  private readonly gkey = new KeyTracker();
+  private keyChanges = 0;
 
   private lastT = -1;
   private lastTriggerT = -1e9;
@@ -102,6 +107,7 @@ class AnalyzerImpl implements Analyzer {
     this.held.fill(0);
     this.notes.length = 0;
     this.gkey.reset();
+    this.keyChanges = 0;
     this.lastT = -1;
     this.lastTriggerT = -1e9;
     this.lastBassNote = -1;
@@ -209,7 +215,7 @@ class AnalyzerImpl implements Analyzer {
     }
     if (bassNote < 0) this.lastBassNote = -1;
 
-    this.gkey.addPool(this.pool, dt);
+    this.gkey.addPool(this.pool, dt, t);
 
     let mask = 0,
       active = 0;
@@ -417,8 +423,14 @@ class AnalyzerImpl implements Analyzer {
     this.lastEvent = ev;
     this.history.push(ev);
     if (this.history.length > 6) this.history.shift();
-    if (r.qi >= 0) this.gkey.addChord(ev.root, TEMPLATES[r.qi].guides);
+    if (r.qi >= 0) this.gkey.addChord(ev.root, TEMPLATES[r.qi].guides, t);
     this.updateLocalKey(prev, ev, t);
+    // a confirmed global modulation overrides an older local reading
+    if (this.gkey.changes !== this.keyChanges) {
+      this.keyChanges = this.gkey.changes;
+      const g = this.gkey.estimate();
+      if (this.local && g && this.local.tonic !== g.tonic && t - this.local.t > 1000) this.local = null;
+    }
     this.predictions = r.qi >= 0 ? predict(ev, this.contextKey(), this.history) : [];
   }
 
@@ -427,11 +439,11 @@ class AnalyzerImpl implements Analyzer {
     if (prev) {
       const m = mod12(ev.root - prev.root);
       if (isPreDom(prev.q) && isDom(ev.q) && m === 5) {
-        this.local = { tonic: mod12(ev.root + 5), mode: prev.q === 'm7b5' ? 'minor' : 'major', implied: true, t };
+        this.local = { tonic: mod12(ev.root + 5), mode: prev.q === 'm7b5' ? 'minor' : 'major', implied: true, t, miss: 0 };
         return;
       }
       if (isPreDom(prev.q) && isDom(ev.q) && m === 11) {
-        this.local = { tonic: mod12(ev.root - 1), mode: prev.q === 'm7b5' ? 'minor' : 'major', implied: true, t };
+        this.local = { tonic: mod12(ev.root - 1), mode: prev.q === 'm7b5' ? 'minor' : 'major', implied: true, t, miss: 0 };
         return;
       }
       const tonicish = isMajTonic(ev.q) || isMinTonic(ev.q);
@@ -440,16 +452,20 @@ class AnalyzerImpl implements Analyzer {
         // an m7 arrival that is already ii/iii/vi of the current key is just a chain, not a new key
         const ref = loc ?? this.gkey.estimate();
         if (!(ev.q === 'm7' && ref && diatonic(ev.root, ev.q, ref))) {
-          this.local = { tonic: ev.root, mode: minor ? 'minor' : 'major', implied: false, t };
+          this.local = { tonic: ev.root, mode: minor ? 'minor' : 'major', implied: false, t, miss: 0 };
           return;
         }
       }
     }
     if (loc) {
       if (loc.implied && ev.root === loc.tonic && (isMajTonic(ev.q) || isMinTonic(ev.q))) {
-        this.local = { tonic: loc.tonic, mode: isMinTonic(ev.q) ? 'minor' : 'major', implied: false, t };
+        this.local = { tonic: loc.tonic, mode: isMinTonic(ev.q) ? 'minor' : 'major', implied: false, t, miss: 0 };
       } else if (diatonic(ev.root, ev.q, loc) || (isDom(ev.q) && mod12(ev.root - loc.tonic) === 7)) {
         loc.t = t;
+        loc.miss = 0;
+      } else if (++loc.miss >= (loc.implied ? LOCAL_MISS_IMPLIED : LOCAL_MISS)) {
+        // the music has moved on without resolving here
+        this.local = null;
       }
     }
   }
