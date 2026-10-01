@@ -22,7 +22,19 @@ It answers two questions:
 
 ## Running it
 
-_(The lead will fill this in.)_
+You need Node.js 20 or newer (`brew install node` if `node -v` says it's missing). Then, in Terminal:
+
+```sh
+git clone https://github.com/jcroft/midi-visualizer.git
+cd midi-visualizer
+bash run.sh
+```
+
+The first run installs dependencies (about a minute), builds a production bundle, and opens the app. Measure on this production build. `bash run.sh --dev` instead gives you hot reload while you tweak visuals; every visual knob lives in `src/renderer/render/tuning.ts`.
+
+No S61 handy? Press **Demo** to loop a ~30-second jazz progression, or play the computer keyboard (A W S E D F T G Y H U J K = C4 up to C5, Z/X shift octaves, Space is the pedal). Demo notes don't count toward the latency numbers; QWERTY and real MIDI do.
+
+`npm test` runs the 76 unit tests (theory goldens, MIDI parsing, pedal state, bench math).
 
 ## What you'll see
 
