@@ -11,7 +11,7 @@ src/main/            Electron main process (window, MIDI permission, file saving
 src/preload/         tiny bridge for saving files
 src/renderer/
   midi/              Web MIDI input, piano state (held/sustain/sostenuto), QWERTY, demo, recorder
-  render/            three.js Compass (default) and River (V key); WebGPU, WebGL2 fallback; knobs in tuning.ts
+  render/            three.js Compass (the River in river.ts is kept but not in the UI); WebGPU, WebGL2 fallback; knobs in tuning.ts
   bench/             frame-pacing and latency stats, HUD
   ui/                bottom-left controls
 src/worker/          theory worker (chords, key, predictions off the main thread)

@@ -20,6 +20,7 @@ import { FN_RGB, OFFER_CSS, OFFER_RGB, ROLE_RGB, fnFromRoman } from './taxonomy'
 import { chordTones, tendencies, type Tendency } from '@theory/voicing';
 import { readLineNote, scaleFor, type LineNote, type ScaleReading } from '@theory/scales';
 import { reharmsFor, type Reharm } from '@theory/reharm';
+import { moveById } from '@theory/moves';
 import { tensionOf } from '@theory/tension';
 import {
   BADGE_FADE,
@@ -34,8 +35,9 @@ import {
   COMET_FILL,
   DISPLAY_FONT,
   HAIRLINE,
-  KEY_TITLE_R,
-  KEY_TITLE_SIZE,
+  KEY_BLOCK_SIZE,
+  KEY_BLOCK_X,
+  KEY_BLOCK_Y,
   WEATHER_ALPHA,
   WEATHER_R,
   WEATHER_TAU,
@@ -82,6 +84,7 @@ const baseAng = (pc: number): number => Math.PI / 2 - fifthsPos(pc) * STEP;
 /** Angle of a pitch class on the ring as drawn. */
 export const angOf = (pc: number): number => baseAng(pc) + wheel;
 const mod12 = (n: number): number => ((n % 12) + 12) % 12;
+const BLACK_KEY = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
 const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 /** Parent major scale of a key, so the arc covers the 7 diatonic pitch classes. */
@@ -360,6 +363,7 @@ export class Compass {
       this.history.voicesOn = layers.voices;
       this.history.tensionOn = layers.tensionCurve;
       this.history.bracketsOn = layers.moves;
+      this.history.capsOn = layers.tensionCaps;
       this.history.loopOn = layers.loopLock;
       this.history.layout();
     }
@@ -369,15 +373,14 @@ export class Compass {
   }
 
   layout(): void {
-    const { cx, cy, R, dpr, w, h } = this.L;
+    const { cx, cy, R, dpr, w } = this.L;
     const compassView = this.L.view === 'compass';
     void w;
     this.chordLayer.place(cx, cy - R * this.chordDrop(), R * 2.0, R * 1.3, dpr);
     if (compassView) {
-      // The key is a title above the ring.
-      const size = R * KEY_TITLE_SIZE;
-      const ky = Math.min(cy + R * KEY_TITLE_R, h - 0.75 * size - 16);
-      this.keyLayer.place(cx, ky, R * 1.6, size * 1.9, dpr);
+      // The key is a page heading at the top left (the arc carries it at a glance).
+      const kb = this.keyBlock();
+      this.keyLayer.place(kb.x0 + kb.w / 2, kb.y, kb.w, kb.h, dpr);
     } else {
       this.keyLayer.place(cx, cy + R * 1.62, R * 3.6, Math.max(18, R * 0.2), dpr);
     }
@@ -395,17 +398,22 @@ export class Compass {
 
   /** The chord name sits lower when the Stack is using the top of the interior. */
   private chordDrop(): number {
-    return this.layers.stack ? 0.3 : 0.06;
+    // The stack stands beside the ring now, so the chord keeps the center (the River view still holds it inside).
+    return this.layers.stack && this.L.view === 'river' ? 0.3 : 0.06;
   }
 
-  /** Bounding box of the key title (compass view), so prediction labels keep clear of it. */
+  /** The key heading's canvas at the top left: left edge, center y, size, and the tonic's font size. */
+  private keyBlock(): { x0: number; y: number; w: number; h: number; size: number } {
+    const { w, h } = this.L;
+    const size = Math.max(28, h * KEY_BLOCK_SIZE);
+    return { x0: w * KEY_BLOCK_X, y: h * (1 - KEY_BLOCK_Y), w: size * 6, h: size * 1.9, size };
+  }
+
+  /** Bounding box of the key heading (compass view), so prediction labels keep clear of it. */
   private keyTitleBox(): PredLabel | null {
     if (this.L.view !== 'compass' || !this.keyTonicName || !this.layers.key) return null;
-    const { cx, cy, R, h } = this.L;
-    const size = R * KEY_TITLE_SIZE;
-    const ky = Math.min(cy + R * KEY_TITLE_R, h - 0.75 * size - 16);
-    const hw = R * 0.42;
-    return { root: 0, name: '', sub: '', nameSize: 0, subSize: 0, align: 'top', ax: cx, ay: ky, x0: cx - hw, x1: cx + hw, y0: ky - size * 0.75, y1: ky + size * 0.75, opacity: 0 };
+    const kb = this.keyBlock();
+    return { root: 0, name: '', sub: '', nameSize: 0, subSize: 0, align: 'top', ax: kb.x0, ay: kb.y, x0: kb.x0, x1: kb.x0 + kb.size * 4, y0: kb.y - kb.size * 0.9, y1: kb.y + kb.size * 0.75, opacity: 0 };
   }
 
   noteOn(note: number, vel: number, t: number): void {
@@ -497,6 +505,12 @@ export class Compass {
           this.badgeRoot = c.root;
           this.badgeT = t;
           this.badgeLayer.changed();
+          // a finished cadence caps the tension ribbon over its chords
+          if (!mv.loop) {
+            const mark = a.moves?.find((m) => m.id === mv.id && m.to === a.seq);
+            const n = moveById(mv.id)?.steps.filter((x) => !x.opt).length ?? 2;
+            this.history.addCap(mark ? mark.from : a.seq - n + 1, a.seq, mv.name);
+          }
         } else if (land.label) {
           this.badge = land.label;
           this.badgeRest = '';
@@ -552,7 +566,7 @@ export class Compass {
     const top = a.predictions[0];
     this.history.setFuture(
       top
-        ? [{ name: top.name, roman: top.roman ?? '', root: top.root, q: top.q }, ...(top.then ? [{ name: top.then.name, roman: top.then.roman ?? '', root: top.then.root, q: top.then.q }] : [])]
+        ? [{ name: top.name, roman: top.roman ?? '', root: top.root, q: top.q, why: (top.loop ? '↻ ' : '') + top.why, moveId: top.move?.id }, ...(top.then ? [{ name: top.then.name, roman: top.then.roman ?? '', root: top.then.root, q: top.then.q }] : [])]
         : [],
     );
 
@@ -656,8 +670,11 @@ export class Compass {
     const subSize = Math.max(10, R * 0.04 * (scale < 1 ? 0.85 : 1));
     const parts: string[] = [];
     if (p.roman) parts.push(p.roman);
-    // The reason; every label says which move it would continue ("completes ii–V–I", "Axis 3/4").
-    if (top || p.move) parts.push((p.loop ? '↻ ' : '') + p.why);
+    // The reason ("completes ii–V–I", "Axis 3/4") lives on the lead sheet under the next chord;
+    // without the lead sheet it stays here.
+    const sheet = this.layers.history && this.L.view === 'compass';
+    if (!sheet && (top || p.move)) parts.push((p.loop ? '↻ ' : '') + p.why);
+    else if (p.loop) parts.push('↻');
     if (p.kind === 'modulating' && p.tonicizes) parts.push(`→ ${p.tonicizes}`);
     const sub = parts.join('  ·  ');
 
@@ -689,7 +706,7 @@ export class Compass {
     else [x0, x1, y0, y1] = [ax - bw / 2, ax + bw / 2, ay - bh, ay];
     // Keep clear of the lead sheet (and its hidden voices) along the bottom.
     if (this.layers.history && this.L.view === 'compass') {
-      const floor = this.history.top + R * 0.02;
+      const floor = this.history.top + this.keybedClear() + R * 0.02;
       if (y0 < floor) {
         const dy = floor - y0;
         y0 += dy;
@@ -987,8 +1004,16 @@ export class Compass {
       const target = a ? tensionOf(chord ? { root: chord.root, q: chord.quality } : null, a.pcs, a.key) : 0;
       this.tension += (target - this.tension) * (1 - Math.exp(-dt / TENSION_TAU));
       this.history.pushTension(t, this.tension);
+      // where the predicted chord would take it (its chord tones, in the key in force)
+      const top = a?.predictions[0];
+      if (top && top.p >= 0.3) {
+        const pcs = new Array<number>(12).fill(0);
+        for (const pc of chordTones(top.root, top.q)) pcs[pc] = 1;
+        this.history.setForecast(tensionOf({ root: top.root, q: top.q }, pcs, a!.key));
+      } else this.history.setForecast(null);
     }
     this.history.draw(sp, t, on.history && this.L.view === 'compass', on.predictions, on.voices);
+    if (on.keybed && this.L.view === 'compass') this.drawKeybed(sp, levels, on.touch ? touch : null);
 
     // ---- pedal indicator (bottom right) ----
     if (this.pedalCell) {
@@ -1127,14 +1152,67 @@ export class Compass {
 
   // ---------- reharm offers ----------
 
+  /**
+   * The keybed (experiment): all 88 keys across the full width just above the lead
+   * sheet. Sounding keys light in their role's color (root in its hue); keys held only
+   * by the pedal glow softly.
+   */
+  /** Height the keybed strip takes above the lead sheet, so 6 o'clock labels sit over it. */
+  private keybedClear(): number {
+    return this.layers.keybed && this.L.view === 'compass' ? Math.max(14, this.L.h * 0.022) * 1.6 : 0;
+  }
+
+  private drawKeybed(sp: SpriteBatch, levels: Float32Array, touch: Touch | null): void {
+    const { w, h } = this.L;
+    const x0 = w * 0.04, x1 = w * 0.96;
+    const kh = Math.max(14, h * 0.022);
+    const y = (this.layers.history ? this.history.top : this.L.sheetH) + kh * 0.9;
+    const whites: number[] = [];
+    for (let n = 21; n <= 108; n++) if (!BLACK_KEY[n % 12]) whites.push(n);
+    const ww = (x1 - x0) / whites.length;
+    const roles = new Map<number, [number, number, number]>();
+    const r = this.stack.current;
+    for (const v of r?.voices ?? []) {
+      if (v.cls === 'root') roles.set(v.note, [BRIGHT_RGB[v.pc * 3], BRIGHT_RGB[v.pc * 3 + 1], BRIGHT_RGB[v.pc * 3 + 2]]);
+      else { const c = ROLE_RGB[v.cls]; roles.set(v.note, [c[0], c[1], c[2]]); }
+    }
+    const lit = (n: number): [number, number, number] | null => (levels[n] > 0.25 ? (roles.get(n) ?? [0.8, 0.83, 0.92]) : null);
+    let wi = 0;
+    const xOf = new Map<number, number>();
+    for (const n of whites) {
+      const x = x0 + (wi++ + 0.5) * ww;
+      xOf.set(n, x);
+      const c = lit(n);
+      if (c) sp.rect(x, y, ww * 0.42, kh / 2, c[0], c[1], c[2], 0.85);
+      else sp.rect(x, y, ww * 0.42, kh / 2, 0.75, 0.8, 0.95, n % 12 === 0 ? 0.1 : 0.06);
+      if (touch && touch.pedal > 0.05 && levels[n] > 0.05 && levels[n] <= 0.25) sp.glow(x, y, ww, 0.7, 0.75, 0.9, 0.12 * touch.pedal);
+    }
+    for (let n = 22; n <= 108; n++) {
+      if (!BLACK_KEY[n % 12]) continue;
+      const x = (xOf.get(n - 1)! + (xOf.get(n + 1) ?? xOf.get(n - 1)! + ww)) / 2;
+      const c = lit(n);
+      sp.rect(x, y + kh * 0.18, ww * 0.3, kh * 0.32, 0.03, 0.035, 0.05, 1);
+      if (c) sp.rect(x, y + kh * 0.18, ww * 0.26, kh * 0.3, c[0], c[1], c[2], 0.9);
+    }
+  }
+
   /** Recompute the offers when the chord, the likely next chord, or the voicing changes. */
   private updateOffers(chord: Analysis['chord'], t: number): void {
     const a = this.a;
     const notes = this.stack.current ? this.stack.current.voices.map((v) => v.note) : [];
-    const key = !chord || !a ? '' : `${chord.root}${chord.quality}|${a.predictions.map((p) => `${p.root}${p.q}${p.p >= 0.3 ? 1 : 0}`).join(',')}|${notes.join(',')}|${a.key ? a.key.tonic : ''}`;
+    const key = !chord || !a ? '' : `${chord.root}${chord.quality}|${a.predictions.map((p) => `${p.root}${p.q}${p.p >= 0.3 ? 1 : 0}`).join(',')}|${notes.join(',')}|${a.key ? a.key.tonic : ''}|${a.style?.lead ?? ''}${a.style?.lean ?? ''}`;
     if (key === this.offerKey) return;
     this.offerKey = key;
-    this.offers = chord && a ? reharmsFor({ root: chord.root, q: chord.quality }, a.predictions, notes, a.key) : [];
+    // the styles in play (the lean counts as the lead) order the library's offers
+    const style: Record<string, number> = {};
+    for (const x of a?.style?.shares ?? []) style[x.style] = x.share / (a!.style!.shares[0]?.share || 1);
+    if (a?.style?.lean) style[a.style.lean] = 1;
+    const triads = !!chord && (chord.quality === 'maj' || chord.quality === 'min');
+    this.offers = chord && a ? reharmsFor({ root: chord.root, q: chord.quality }, a.predictions, notes, a.key, style, triads) : [];
+    // On the lead sheet they print as alternate changes over the next chord, named by their move.
+    this.history.setAlternates(
+      this.layers.reharm ? this.offers.map((o) => ({ name: o.path.map((p) => p.name).join(' → '), why: [o.why, ...(o.move ? [o.move.styles.slice(0, 2).join('/')] : [])].join(' · ') })) : [],
+    );
     const sig = this.offers.map((o) => o.why).join('|') + (chord ? chord.root : '');
     if (sig !== this.offerSig) {
       this.offerSig = sig;
@@ -1150,17 +1228,20 @@ export class Compass {
     if (this.thenLabel) placed.push(this.thenLabel);
     const kb = this.keyTitleBox();
     if (kb) placed.push(kb);
+    // With the lead sheet showing, offers are written there as alternates; the ring keeps the bare diamonds.
+    const sheet = this.layers.history && this.L.view === 'compass';
     for (let i = 0; i < 3; i++) {
       const o = this.offers[i];
       let lab: PredLabel | null = null;
-      if (o) {
+      if (o && !sheet) {
         const name = o.path.map((s) => s.name).join(' → ');
+        const sub = [o.why, ...(o.move ? [o.move.styles.slice(0, 2).join('/')] : [])].join(' · ');
         const nameSize = Math.max(12, R * 0.05);
         const subSize = Math.max(10, R * 0.034);
         this.measure.font = `500 ${nameSize}px ${DISPLAY_FONT}`;
         let bw = this.measure.measureText(name).width;
         this.measure.font = `500 ${subSize}px ${MONO_FONT}`;
-        bw = Math.min(R * PRED_W, Math.max(bw, this.measure.measureText(o.why).width + o.why.length));
+        bw = Math.min(R * PRED_W, Math.max(bw, this.measure.measureText(sub).width + sub.length));
         const bh = nameSize * 1.05 + subSize * 1.35;
         const ang = baseAng(o.path[0].root) + (this.layers.tonicUp ? this.wheelTarget : 0);
         const c = Math.cos(ang), s = Math.sin(ang);
@@ -1171,8 +1252,8 @@ export class Compass {
         else if (align === 'right') [x0, x1, y0, y1] = [ax - bw, ax, ay - bh / 2, ay + bh / 2];
         else if (align === 'top') [x0, x1, y0, y1] = [ax - bw / 2, ax + bw / 2, ay, ay + bh];
         else [x0, x1, y0, y1] = [ax - bw / 2, ax + bw / 2, ay - bh, ay];
-        const cand: PredLabel = { root: o.path[0].root, name, sub: o.why, nameSize, subSize, align, ax, ay, x0, y0, x1, y1, opacity: i === 0 ? 0.95 : 0.75 };
-        const floor = this.layers.history && this.L.view === 'compass' ? this.history.top + R * 0.02 : -1e9;
+        const cand: PredLabel = { root: o.path[0].root, name, sub, nameSize, subSize, align, ax, ay, x0, y0, x1, y1, opacity: i === 0 ? 0.95 : 0.75 };
+        const floor = this.layers.history && this.L.view === 'compass' ? this.history.top + this.keybedClear() + R * 0.02 : -1e9;
         if (y0 >= floor && !placed.some((q) => overlaps(q, cand, R * 0.02))) {
           lab = cand;
           placed.push(cand);
@@ -1393,13 +1474,19 @@ export class Compass {
       ctx.fillText('play a chord', w / 2, h / 2 + size * 0.1);
       return;
     }
-    const m = this.chordName.match(/^([A-G][♭♯b#]?)([^/]*)(\/.*)?$/);
+    // A slash is a bass note only when a note name follows it: C6/9 is one chord, C/E is over E.
+    const m = this.chordName.match(/^([A-G][♭♯b#]?)(.*?)(\/[A-G][♭♯b#]?)?$/);
     const root = m ? m[1] : this.chordName;
     const qual = m ? m[2] : '';
     const slash = m && m[3] ? m[3] : '';
+    // 6/9 is written stacked, 6 over 9, so it can't be mistaken for a slash chord.
+    const six9 = qual.indexOf('6/9');
+    const qa = six9 >= 0 ? qual.slice(0, six9) : qual;
+    const qb = six9 >= 0 ? qual.slice(six9 + 3) : '';
     const fonts = (sz: number) => ({
       rf: `${this.faint ? 400 : 600} ${sz}px ${DISPLAY_FONT}`,
       qf: `${this.faint ? 400 : 500} ${sz * 0.58}px ${DISPLAY_FONT}`,
+      ff: `${this.faint ? 400 : 500} ${sz * 0.4}px ${DISPLAY_FONT}`,
     });
     const widths = (sz: number) => {
       const f = fonts(sz);
@@ -1407,8 +1494,11 @@ export class Compass {
       const rw = ctx.measureText(root).width;
       const sw = ctx.measureText(slash).width;
       ctx.font = f.qf;
-      const qw = ctx.measureText(qual).width;
-      return { rw, sw, qw };
+      const aw = ctx.measureText(qa).width;
+      const bw = ctx.measureText(qb).width;
+      ctx.font = f.ff;
+      const fw = six9 >= 0 ? ctx.measureText('6').width + sz * 0.06 : 0;
+      return { rw, sw, aw, fw, bw, qw: aw + fw + bw };
     };
     // Shrink long names (C7(♭9♯11)/E) so they never run into the pitch labels.
     let wd = widths(size);
@@ -1418,8 +1508,8 @@ export class Compass {
       size *= maxW / total;
       wd = widths(size);
     }
-    const { rf, qf } = fonts(size);
-    const { rw, qw, sw } = wd;
+    const { rf, qf, ff } = fonts(size);
+    const { rw, qw, sw, aw, fw } = wd;
     const x = w / 2 - (rw + qw + sw) / 2;
     const base = h / 2 + size * 0.33;
     ctx.textAlign = 'left';
@@ -1427,7 +1517,21 @@ export class Compass {
     ctx.font = rf;
     ctx.fillText(root, x, base);
     ctx.font = qf;
-    ctx.fillText(qual, x + rw + 1, base - size * 0.42);
+    let qx = x + rw + 1;
+    ctx.fillText(qa, qx, base - size * 0.42);
+    qx += aw;
+    if (six9 >= 0) {
+      ctx.font = ff;
+      ctx.textAlign = 'center';
+      const fx = qx + fw / 2;
+      ctx.fillText('6', fx, base - size * 0.62);
+      ctx.fillText('9', fx, base - size * 0.2);
+      ctx.fillRect(qx + size * 0.01, base - size * 0.53, fw - size * 0.02, Math.max(1, size * 0.018));
+      ctx.textAlign = 'left';
+      ctx.font = qf;
+      qx += fw;
+      ctx.fillText(qb, qx, base - size * 0.42);
+    }
     ctx.font = rf;
     ctx.fillText(slash, x + rw + qw + 2, base);
 
@@ -1482,9 +1586,8 @@ export class Compass {
     }
     // The hero title: the tonic big, the mode in small caps to its upper right.
     // An implied key is drawn hollow, with a caption saying so.
-    const R = this.L.R;
-    const size = R * KEY_TITLE_SIZE;
-    const modeSize = Math.max(11, R * 0.055);
+    const size = this.keyBlock().size;
+    const modeSize = Math.max(11, size * 0.22);
     const tonicFont = `600 ${size}px ${DISPLAY_FONT}`;
     const modeFont = `500 ${modeSize}px ${MONO_FONT}`;
     ctx.font = tonicFont;
@@ -1493,7 +1596,9 @@ export class Compass {
     ctx.letterSpacing = '3px';
     const mw = ctx.measureText(this.keyModeName).width;
     const gap = size * 0.12;
-    const x = w / 2 - (tw + gap + mw) / 2;
+    const x = 1;
+    void w;
+    void mw;
     const base = h / 2 + size * 0.36;
     const color = cssOklch(this.lastKeyTonic, 0.8, 0.08, 1); // under the bloom threshold: structure never blooms
     ctx.textAlign = 'left';

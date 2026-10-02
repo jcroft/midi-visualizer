@@ -85,7 +85,7 @@ export const COMPASS_R_H = 0.27;
  */
 export const SHEET_FRAC = 0.25;
 export const COMPASS_ONLY_R_W = 0.22;
-export const COMPASS_ONLY_R_H = 0.37;
+export const COMPASS_ONLY_R_H = 0.4;
 export const COMPASS_ONLY_CY = 0.45;
 /** Radius stack, as multiples of R: needle track, key arc, prediction orbit, prediction labels. */
 export const NEEDLE_R = 1.06;
@@ -142,8 +142,17 @@ export const HISTORY_SPEED = 1.5;
 export const HISTORY_FADE_POW = 1.3;
 export const HISTORY_MAX = 32;
 
-// ---------- the Stack (voicing ladder inside the ring) ----------
-/** Column from cy + BOTTOM*R to cy + TOP*R (y-up), 0.013 R per semitone (a 46-semitone window). */
+// ---------- the Stack (voicing column) ----------
+/**
+ * Compass view: the column stands in the left wing, from TOP_FRAC to BOTTOM_FRAC of the
+ * height (measured from the top), centered in the space left of the ring and its
+ * 9 o'clock labels (cx − CLEAR·R). Its sizes scale with U = U_R·R.
+ */
+export const STACK_TOP_FRAC = 0.22;
+export const STACK_BOTTOM_FRAC = 0.7;
+export const STACK_WING_CLEAR_R = 1.75;
+export const STACK_WING_U_R = 1.6;
+/** River view: the column inside the ring, from cy + BOTTOM*R to cy + TOP*R (y-up); sizes in R. */
 export const STACK_TOP_R = 0.64;
 export const STACK_BOTTOM_R = 0.12;
 export const STACK_SEMI_R = 0.024;
@@ -154,10 +163,11 @@ export const STACK_SLIDE = 0.25;
 export const STACK_LINE_GROW = 0.3;
 export const STACK_GHOST_FADE = 2;
 
-// ---------- key title (compass view) ----------
-/** Center of the key title above the ring, and its size, as multiples of R. */
-export const KEY_TITLE_R = 1.52;
-export const KEY_TITLE_SIZE = 0.26;
+// ---------- key heading (compass view) ----------
+/** The key as a page heading at the top left: left edge (× width), center (× height from the top), tonic size (× height). */
+export const KEY_BLOCK_X = 0.04;
+export const KEY_BLOCK_Y = 0.075;
+export const KEY_BLOCK_SIZE = 0.075;
 
 // ---------- tonic-up wheel and harmonic weather ----------
 /** Tonic-up: how fast the wheel turns to put a confirmed tonic at 12 o'clock (rad/s natural frequency). */
@@ -171,7 +181,7 @@ export const WEATHER_TAU = 1.2;
 export const DISPLAY_FONT = '"SF Pro Display", -apple-system, "Helvetica Neue", Inter, Arial, sans-serif';
 export const MONO_FONT = '"SF Mono", ui-monospace, Menlo, monospace';
 /** Chord name height as a fraction of the compass radius (shrinks to fit 1.6 R wide). */
-export const CHORD_SIZE_R = 0.36;
+export const CHORD_SIZE_R = 0.45;
 export const CHORD_MAX_W_R = 1.6;
 /** Below this confidence the chord dims and the runner-up shows. */
 export const LOW_CONF = 0.5;
