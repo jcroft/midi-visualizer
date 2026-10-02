@@ -69,6 +69,13 @@ describe('loop lock', () => {
 });
 
 describe('brackets on the lead sheet', () => {
+  it('a backdoor after a ii–V–I gets its own bracket, not a one-lap I–♭VII vamp', () => {
+    const { events } = run([...TWO_FIVE_ONE, 'F2 Eb3 Ab3 C4', 'Bb2 Ab3 D4 G4', 'C3 G3 B3 E4']);
+    const ids = events.at(-1)!.moves!.map((m) => m.id);
+    expect(ids).toContain('jazz.backdoor');
+    expect(ids).not.toContain('rock.I-bVII');
+  });
+
   it('a ii–V–I forms over two chords, then closes on the I', () => {
     const { events } = run(TWO_FIVE_ONE);
     const two = events[1].moves!.find((m) => m.id === 'jazz.ii-V-I')!;

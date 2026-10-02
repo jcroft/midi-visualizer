@@ -78,7 +78,7 @@ export class MoveTracker {
   }
 
   /** A new chord event. */
-  onChord(c: Chord, seq: number, key: KeyLike | null): { marks: MoveMark[]; loop: LoopLock | null; landing: { move: Move; name: string; laps: number; count: number; style: string | null } | null } {
+  onChord(c: Chord, seq: number, key: KeyLike | null): { marks: MoveMark[]; loop: LoopLock | null; landing: { move: Move; name: string; tonic: number; home: number; laps: number; count: number; style: string | null } | null } {
     this.hist.push({ root: c.root, q: c.q, seq });
     if (this.hist.length > MATCH_WINDOW) this.hist.shift();
     const ms = matchMoves(this.hist, { key, style: this.relStyle() });
@@ -95,7 +95,7 @@ export class MoveTracker {
       if (top.complete || lap) {
         const count = (this.counts.get(top.move.id) ?? 0) + 1;
         this.counts.set(top.move.id, count);
-        landing = { move: top.move, name: top.name, laps: Math.floor(top.laps), count, style: this.styleOf(top.move) };
+        landing = { move: top.move, name: top.name, tonic: top.tonic, home: top.home, laps: Math.floor(top.laps), count, style: this.styleOf(top.move) };
       }
     }
     return { marks, loop, landing };
@@ -125,8 +125,9 @@ export class MoveTracker {
         const dom2 = after.step.deg === 7 || (!!after2 && mod12(after2.root - after.root) === 5);
         then = { root: after.root, q: seenAfter ?? classQuality(after.step.cls, tex.triads, dom2 && (!tex.triads || tex.dom7)) };
       }
-      // ↻ only once a loop has come round
-      cands.push({ root: nx.root, q, w: m.strength, why, move: ref, then, loop: loop && m.laps >= 1 });
+      // ↻ only for the loop that has locked (come round twice)
+      const locked = loop && !!this.loop && !this.loop.broke && this.loop.period === n;
+      cands.push({ root: nx.root, q, w: m.strength, why, move: ref, then, loop: locked });
     }
     // A loop nobody wrote down: once it has come round, its next chord is the one a lap ago.
     if (this.loop && !this.loop.broke) {
@@ -253,9 +254,17 @@ export class MoveTracker {
 
   /** At most two brackets cover the newest chord; brackets the music walked away from close. */
   private updateBrackets(seq: number): MoveMark[] {
-    // a loop shows once half a lap is in (three chords at least); a second bracket needs three chords of its own
+    // A loop shows once half a lap is in (three chords at least; four, undecorated, for a two-chord vamp).
+    // A cadence needs three chords played: a bare two-chord cadence (V–vi, IV–I) gets a landing badge
+    // but no bracket, since it is everywhere.
     const cands = this.matches.filter(
-      (m) => m.strength >= BRACKET_MIN && (m.move.kind === 'cadence' || m.filled >= Math.max(3, Math.ceil(m.move.steps.length / 2))),
+      (m) =>
+        m.strength >= BRACKET_MIN &&
+        (m.move.kind === 'cadence'
+          ? m.filled >= 3 || m.move.steps.filter((x) => !x.opt).length >= 3
+          : m.move.steps.length <= 2
+            ? m.filled >= 4 && !m.detours.length // a two-chord vamp has to actually vamp
+            : m.filled >= Math.max(3, Math.ceil(m.move.steps.length / 2))),
     );
     const picked: Match[] = [];
     for (const m of cands) {
@@ -265,7 +274,8 @@ export class MoveTracker {
         continue;
       }
       // Both end on the newest chord, so a different start means one nests inside the other.
-      if (m.start !== picked[0].start && m.move.id !== picked[0].move.id && m.filled >= 3) picked.push(m);
+      // The second level is a cadence inside the main move (a ii–V–I inside a turnaround), never a loop in a loop.
+      if (m.start !== picked[0].start && m.move.id !== picked[0].move.id && m.move.kind === 'cadence' && m.filled >= 3) picked.push(m);
     }
     const out: MoveMark[] = [];
     const touched = new Set<string>();

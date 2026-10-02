@@ -104,7 +104,18 @@ export interface Landing {
   label: string | null;
   fn: Fn | null;
   /** A library move this chord completed (a cadence landing, or a loop coming round). */
-  move?: { id: string; name: string; style: string | null; count: number; laps: number; loop: boolean };
+  move?: {
+    id: string;
+    name: string;
+    style: string | null;
+    count: number;
+    laps: number;
+    loop: boolean;
+    /** The key it was played in (the alias's home when it goes by another name). */
+    home: number;
+    /** Semitones from the move's written tonic to that home. */
+    rot: number;
+  };
 }
 
 /** Hindsight on the previous chord, carried by the next chord event. */

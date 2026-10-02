@@ -513,7 +513,7 @@ class AnalyzerImpl implements Analyzer {
     if (mv.landing && prev) {
       const l = mv.landing;
       this.landing ??= { from: prev.root, hit: -1, exact: false, label: null, fn: null };
-      this.landing.move = { id: l.move.id, name: l.name, style: l.style, count: l.count, laps: l.laps, loop: l.move.kind === 'loop' };
+      this.landing.move = { id: l.move.id, name: l.name, style: l.style, count: l.count, laps: l.laps, loop: l.move.kind === 'loop', home: (l.tonic + l.home) % 12, rot: l.home };
     }
     this.lib = r.qi >= 0 ? this.moves.lib(frame) : null;
     this.predictions = r.qi >= 0 ? predict(ev, frame, this.history, 0, this.lib) : [];

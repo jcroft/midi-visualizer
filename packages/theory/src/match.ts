@@ -42,6 +42,8 @@ export interface Match {
   seen: (string | null)[];
   /** The name to show (an alias when home sits elsewhere in a loop). */
   name: string;
+  /** Semitones from the move's tonic to the home that name implies (0 unless an alias). */
+  home: number;
   /** 0..1: how strongly the history supports this match. */
   strength: number;
 }
@@ -160,15 +162,15 @@ export interface MatchContext {
   moves?: readonly Move[];
 }
 
-/** A loop entered on (or heard from) another chord may go by another name. */
-function nameFor(move: Move, tonic: number, firstDeg: number, key: KeyLike | null | undefined): string {
-  if (!move.alias) return move.name;
+/** A loop entered on (or heard from) another chord may go by another name: [name, its home above the tonic]. */
+function nameFor(move: Move, tonic: number, firstDeg: number, key: KeyLike | null | undefined): [string, number] {
+  if (!move.alias) return [move.name, 0];
   for (const [deg, name] of move.alias) {
-    if (key && key.tonic === mod12(tonic + deg)) return name;
+    if (key && key.tonic === mod12(tonic + deg)) return [name, deg];
   }
-  if (key && key.tonic === tonic) return move.name;
-  for (const [deg, name] of move.alias) if (firstDeg === deg) return name;
-  return move.name;
+  if (key && key.tonic === tonic) return [move.name, 0];
+  for (const [deg, name] of move.alias) if (firstDeg === deg) return [name, deg];
+  return [move.name, 0];
 }
 
 /** Style multiplier, 0.75..1.3: a move from the styles in play is a little more likely, never ruled out. */
@@ -223,9 +225,11 @@ export function matchMoves(history: readonly Chord[], ctx: MatchContext = {}): M
           fit,
           detours: w.detours,
           seen,
-          name: nameFor(move, tonic, firstDeg, ctx.key),
+          name: '',
+          home: 0,
           strength: 0,
         };
+        [m.name, m.home] = nameFor(move, tonic, firstDeg, ctx.key);
         m.strength = strengthOf(m, ctx);
         if (!bestForMove || m.strength > bestForMove.strength) bestForMove = m;
       }

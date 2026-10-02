@@ -1,7 +1,7 @@
 // Bottom-left controls; fade out after 3 s without mouse movement.
 //
 // Keyboard shortcuts avoid the QWERTY piano keys (A W S E D F T G Y H U J K O L P ; ' Z X Space):
-//   Tab = HUD · V = River on/off · 1/2/3 = Normal/Stress/Flash · Esc = panic · Cmd/Ctrl+F = fullscreen
+//   Tab = HUD · M = today's moves · V = River on/off · 1/2/3 = Normal/Stress/Flash · Esc = panic · Cmd/Ctrl+F = fullscreen
 import type { MidiController } from '../midi/input';
 import type { Replayer } from '../midi/replay';
 import type { Recorder } from '../midi/recorder';
@@ -23,6 +23,8 @@ export interface ChromeDeps {
   setLayer(id: LayerId, on: boolean): void;
   panic(): void;
   toggleHud(): void;
+  /** Open or close today's moves; returns whether it is now open. */
+  toggleMoves(): boolean;
 }
 
 const IDLE_MS = 3000;
@@ -159,6 +161,8 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
     demoBtn.classList.toggle('on', replay.playing);
   };
 
+  const movesBtn = button("Moves", "Today's moves: what you've played, in which keys, and what's left to try (M)", () => toggleMoves());
+  const toggleMoves = () => movesBtn.classList.toggle('on', deps.toggleMoves());
   const riverBtn = button('River', 'Show the River piano roll beside the compass (V)', () => toggleView());
   const toggleView = () => {
     deps.setView(deps.getView() === 'river' ? 'compass' : 'river');
@@ -260,7 +264,7 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
 
   const hint = document.createElement('span');
   hint.className = 'note';
-  hint.textContent = 'QWERTY plays notes · Space = pedal · Tab = HUD · V = River · 1/2/3 = modes · Esc = panic · ⌘F = fullscreen';
+  hint.textContent = 'QWERTY plays notes · Space = pedal · Tab = HUD · M = moves · V = River · 1/2/3 = modes · Esc = panic · ⌘F = fullscreen';
   el.append(hint, status);
 
   // --- keyboard ------------------------------------------------------------
@@ -282,6 +286,10 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
     }
     if (e.code === 'KeyV') {
       toggleView();
+      return;
+    }
+    if (e.code === 'KeyM') {
+      toggleMoves();
       return;
     }
     const m = MODES.find((x) => x.key === e.code);
