@@ -1,4 +1,4 @@
-// The Stack: the voicing as a vertical ladder inside the compass. Each
+// The Stack: the voicing as a vertical ladder in the left wing beside the compass. Each
 // sounding note is a disc at its pitch (the scale fits the voicing), colored by its
 // role in the chord (guide tones gold, tensions teal, alterations magenta),
 // with its function on the left and its name on the right. On a chord change
@@ -12,10 +12,11 @@ import type { SpriteBatch } from './sprites';
 import type { Touch } from './compass';
 import { TextLayer } from './text';
 import { ROLE_CSS, ROLE_RGB } from './taxonomy';
-import { DISPLAY_FONT, MONO_FONT, STACK_BOTTOM_R, STACK_SEMI_MIN_R, STACK_SEMI_R, STACK_TOP_R, STACK_GHOST_FADE, STACK_LINE_GROW, STACK_SLIDE } from './tuning';
+import { DISPLAY_FONT, MONO_FONT, STACK_SEMI_MIN_R, STACK_SEMI_R, STACK_GHOST_FADE, STACK_LINE_GROW, STACK_SLIDE } from './tuning';
 
 const NAMES = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
 const MAX_NOTES = 16;
+const BLACK = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
 
 export class Stack {
   private reading: VoicingReading | null = null;
@@ -52,11 +53,9 @@ export class Stack {
   }
 
   layout(): void {
-    const { cx, cy, R, dpr } = this.L;
+    const { stackX: cx, stackTop: top, stackBot: bot, stackU: R, dpr } = this.L;
     this.semi = R * STACK_SEMI_R;
     this.ghostSemi = this.semi;
-    const top = cy + R * STACK_TOP_R;
-    const bot = cy + R * STACK_BOTTOM_R;
     this.labels.place(cx, (top + bot) / 2, R * 0.9, top - bot + R * 0.16, dpr);
     this.moveLayer.place(cx, (top + bot) / 2, R * 0.9, top - bot + R * 0.16, dpr);
     this.labels.changed();
@@ -65,19 +64,18 @@ export class Stack {
 
   /** Window capacity in semitones. */
   private get span(): number {
-    return (this.L.R * (STACK_TOP_R - STACK_BOTTOM_R)) / this.semi;
+    return (this.L.stackTop - this.L.stackBot) / this.semi;
   }
 
   /** Semitone height that fits a voicing of `range` semitones: big for one hand, smaller for two. */
   private fitSemi(range: number): number {
-    const R = this.L.R;
-    return Math.min(R * STACK_SEMI_R, Math.max(R * STACK_SEMI_MIN_R, (R * (STACK_TOP_R - STACK_BOTTOM_R)) / (range + 6)));
+    const R = this.L.stackU;
+    return Math.min(R * STACK_SEMI_R, Math.max(R * STACK_SEMI_MIN_R, (this.L.stackTop - this.L.stackBot) / (range + 6)));
   }
 
   /** y of a MIDI note for a given window center and scale. */
   private yOf(note: number, center: number, semi = this.semi): number {
-    const { cy, R } = this.L;
-    const mid = cy + (R * (STACK_TOP_R + STACK_BOTTOM_R)) / 2;
+    const mid = (this.L.stackTop + this.L.stackBot) / 2;
     return mid + (note - center) * semi;
   }
 
@@ -142,7 +140,7 @@ export class Stack {
 
   /** Disc radius: follows the scale, so seconds still clear each other. */
   private rad(): number {
-    return Math.min(this.L.R * 0.018, this.semi * 0.8);
+    return Math.min(this.L.stackU * 0.018, this.semi * 0.8);
   }
 
   /**
@@ -151,7 +149,7 @@ export class Stack {
    * stack with the pedal depth, and cools it under the soft pedal.
    */
   draw(sp: SpriteBatch, t: number, on: boolean, touch: Touch | null = null): void {
-    const { cx, R } = this.L;
+    const { stackX: cx, stackU: R } = this.L;
     const opacity = on ? 1 : 0;
     this.labels.opacity = opacity;
     const age = t - this.changeT;
@@ -160,9 +158,18 @@ export class Stack {
     this.moveLayer.update(t);
     if (!on) return;
 
-    const top = this.L.cy + R * STACK_TOP_R;
-    const bot = this.L.cy + R * STACK_BOTTOM_R;
+    const top = this.L.stackTop;
+    const bot = this.L.stackBot;
     const gx = cx - R * 0.16;
+
+    // Keyboard spine: the white keys as faint bands up the column (black keys left dark), so the
+    // discs sit on their actual keys and register reads as a place on the piano.
+    const kw = R * 0.05;
+    for (let n = Math.ceil(this.center - this.span / 2); n <= this.center + this.span / 2; n++) {
+      const y = this.yOf(n, this.center);
+      if (y < bot || y > top || BLACK[n % 12]) continue;
+      sp.rect(cx, y, kw, this.semi * 0.42, 0.75, 0.8, 0.95, n % 12 === 0 ? 0.075 : 0.045);
+    }
 
     // Register gauge: a hairline with a tick at every C in the window.
     sp.line(gx, bot, gx, top, Math.max(1, R * 0.002), 0.5, 0.55, 0.7, 0.12);
@@ -282,7 +289,7 @@ export class Stack {
 
   private drawLabels(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     const r = this.reading;
-    const R = this.L.R;
+    const R = this.L.stackU;
     const midY = h / 2; // canvas center = window center (y-down)
     const yc = (note: number) => midY - (note - this.center) * this.semi;
     const fnSize = Math.max(11, R * 0.048);
@@ -328,7 +335,7 @@ export class Stack {
 
   private drawMoves(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     if (!this.ghost) return;
-    const R = this.L.R;
+    const R = this.L.stackU;
     const midY = h / 2;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

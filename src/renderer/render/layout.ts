@@ -7,6 +7,12 @@ import {
   COMPASS_ONLY_R_H,
   COMPASS_ONLY_R_W,
   SHEET_FRAC,
+  STACK_BOTTOM_FRAC,
+  STACK_BOTTOM_R,
+  STACK_TOP_FRAC,
+  STACK_TOP_R,
+  STACK_WING_CLEAR_R,
+  STACK_WING_U_R,
   COMPASS_R_H,
   COMPASS_R_W,
   KEY_COUNT,
@@ -38,6 +44,15 @@ export class Layout {
   R = 100;
   /** Height of the lead-sheet band along the bottom (compass view; 0 in the river view). */
   sheetH = 0;
+  /**
+   * The voicing column: its center x, top and bottom y, and its size unit (what R is
+   * to the compass). In the compass view it stands in the left wing; in the River
+   * view it sits inside the ring as before.
+   */
+  stackX = 0;
+  stackTop = 0;
+  stackBot = 0;
+  stackU = 100;
 
   // Shader mirrors (seconds and px).
   readonly uNow = uniform(0);
@@ -65,6 +80,12 @@ export class Layout {
       this.cx = w * 0.5;
       this.cy = this.sheetH + region * COMPASS_ONLY_CY;
       this.R = Math.max(40, Math.min(w * COMPASS_ONLY_R_W, region * COMPASS_ONLY_R_H));
+      // Left wing, clear of the prediction labels that hang off the ring's 9 o'clock side.
+      const wing = this.cx - this.R * STACK_WING_CLEAR_R;
+      this.stackX = Math.max(w * 0.06, wing * 0.5);
+      this.stackTop = h * (1 - STACK_TOP_FRAC);
+      this.stackBot = h * (1 - STACK_BOTTOM_FRAC);
+      this.stackU = this.R * STACK_WING_U_R;
     } else {
       this.sheetH = 0;
       const left = this.nowX + 24;
@@ -72,6 +93,10 @@ export class Layout {
       this.cx = left + cw * 0.5;
       this.cy = h * 0.48;
       this.R = Math.max(40, Math.min(cw * COMPASS_R_W, h * COMPASS_R_H));
+      this.stackX = this.cx;
+      this.stackTop = this.cy + this.R * STACK_TOP_R;
+      this.stackBot = this.cy + this.R * STACK_BOTTOM_R;
+      this.stackU = this.R;
     }
 
     this.uNowX.value = this.nowX;

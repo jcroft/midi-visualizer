@@ -395,7 +395,8 @@ export class Compass {
 
   /** The chord name sits lower when the Stack is using the top of the interior. */
   private chordDrop(): number {
-    return this.layers.stack ? 0.3 : 0.06;
+    // The stack stands beside the ring now, so the chord keeps the center (the River view still holds it inside).
+    return this.layers.stack && this.L.view === 'river' ? 0.3 : 0.06;
   }
 
   /** Bounding box of the key title (compass view), so prediction labels keep clear of it. */
@@ -1393,13 +1394,19 @@ export class Compass {
       ctx.fillText('play a chord', w / 2, h / 2 + size * 0.1);
       return;
     }
-    const m = this.chordName.match(/^([A-G][♭♯b#]?)([^/]*)(\/.*)?$/);
+    // A slash is a bass note only when a note name follows it: C6/9 is one chord, C/E is over E.
+    const m = this.chordName.match(/^([A-G][♭♯b#]?)(.*?)(\/[A-G][♭♯b#]?)?$/);
     const root = m ? m[1] : this.chordName;
     const qual = m ? m[2] : '';
     const slash = m && m[3] ? m[3] : '';
+    // 6/9 is written stacked, 6 over 9, so it can't be mistaken for a slash chord.
+    const six9 = qual.indexOf('6/9');
+    const qa = six9 >= 0 ? qual.slice(0, six9) : qual;
+    const qb = six9 >= 0 ? qual.slice(six9 + 3) : '';
     const fonts = (sz: number) => ({
       rf: `${this.faint ? 400 : 600} ${sz}px ${DISPLAY_FONT}`,
       qf: `${this.faint ? 400 : 500} ${sz * 0.58}px ${DISPLAY_FONT}`,
+      ff: `${this.faint ? 400 : 500} ${sz * 0.4}px ${DISPLAY_FONT}`,
     });
     const widths = (sz: number) => {
       const f = fonts(sz);
@@ -1407,8 +1414,11 @@ export class Compass {
       const rw = ctx.measureText(root).width;
       const sw = ctx.measureText(slash).width;
       ctx.font = f.qf;
-      const qw = ctx.measureText(qual).width;
-      return { rw, sw, qw };
+      const aw = ctx.measureText(qa).width;
+      const bw = ctx.measureText(qb).width;
+      ctx.font = f.ff;
+      const fw = six9 >= 0 ? ctx.measureText('6').width + sz * 0.06 : 0;
+      return { rw, sw, aw, fw, bw, qw: aw + fw + bw };
     };
     // Shrink long names (C7(♭9♯11)/E) so they never run into the pitch labels.
     let wd = widths(size);
@@ -1418,8 +1428,8 @@ export class Compass {
       size *= maxW / total;
       wd = widths(size);
     }
-    const { rf, qf } = fonts(size);
-    const { rw, qw, sw } = wd;
+    const { rf, qf, ff } = fonts(size);
+    const { rw, qw, sw, aw, fw } = wd;
     const x = w / 2 - (rw + qw + sw) / 2;
     const base = h / 2 + size * 0.33;
     ctx.textAlign = 'left';
@@ -1427,7 +1437,21 @@ export class Compass {
     ctx.font = rf;
     ctx.fillText(root, x, base);
     ctx.font = qf;
-    ctx.fillText(qual, x + rw + 1, base - size * 0.42);
+    let qx = x + rw + 1;
+    ctx.fillText(qa, qx, base - size * 0.42);
+    qx += aw;
+    if (six9 >= 0) {
+      ctx.font = ff;
+      ctx.textAlign = 'center';
+      const fx = qx + fw / 2;
+      ctx.fillText('6', fx, base - size * 0.62);
+      ctx.fillText('9', fx, base - size * 0.2);
+      ctx.fillRect(qx + size * 0.01, base - size * 0.53, fw - size * 0.02, Math.max(1, size * 0.018));
+      ctx.textAlign = 'left';
+      ctx.font = qf;
+      qx += fw;
+      ctx.fillText(qb, qx, base - size * 0.42);
+    }
     ctx.font = rf;
     ctx.fillText(slash, x + rw + qw + 2, base);
 

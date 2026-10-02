@@ -142,8 +142,17 @@ export const HISTORY_SPEED = 1.5;
 export const HISTORY_FADE_POW = 1.3;
 export const HISTORY_MAX = 32;
 
-// ---------- the Stack (voicing ladder inside the ring) ----------
-/** Column from cy + BOTTOM*R to cy + TOP*R (y-up), 0.013 R per semitone (a 46-semitone window). */
+// ---------- the Stack (voicing column) ----------
+/**
+ * Compass view: the column stands in the left wing, from TOP_FRAC to BOTTOM_FRAC of the
+ * height (measured from the top), centered in the space left of the ring and its
+ * 9 o'clock labels (cx − CLEAR·R). Its sizes scale with U = U_R·R.
+ */
+export const STACK_TOP_FRAC = 0.16;
+export const STACK_BOTTOM_FRAC = 0.7;
+export const STACK_WING_CLEAR_R = 1.75;
+export const STACK_WING_U_R = 1.6;
+/** River view: the column inside the ring, from cy + BOTTOM*R to cy + TOP*R (y-up); sizes in R. */
 export const STACK_TOP_R = 0.64;
 export const STACK_BOTTOM_R = 0.12;
 export const STACK_SEMI_R = 0.024;
@@ -171,7 +180,7 @@ export const WEATHER_TAU = 1.2;
 export const DISPLAY_FONT = '"SF Pro Display", -apple-system, "Helvetica Neue", Inter, Arial, sans-serif';
 export const MONO_FONT = '"SF Mono", ui-monospace, Menlo, monospace';
 /** Chord name height as a fraction of the compass radius (shrinks to fit 1.6 R wide). */
-export const CHORD_SIZE_R = 0.36;
+export const CHORD_SIZE_R = 0.45;
 export const CHORD_MAX_W_R = 1.6;
 /** Below this confidence the chord dims and the runner-up shows. */
 export const LOW_CONF = 0.5;
