@@ -562,7 +562,7 @@ export class HistoryStrip {
     let w = this.nameSize * 0.9; // ‖:
     for (const n of this.loopNames) w += this.nameWidth(n.name, n.roman) + gap;
     this.measure.font = `600 ${this.romanSize * 1.3}px ${MONO_FONT}`;
-    w += this.nameSize * 0.6 + this.measure.measureText(`×${this.loopLaps}`).width + 6;
+    w += this.nameSize * 0.6 + this.measure.measureText(`×${this.loopLaps}`).width + this.nameSize * 0.5;
     return Math.min(w, this.L.w - 8);
   }
 
