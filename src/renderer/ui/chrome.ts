@@ -1,12 +1,12 @@
 // Bottom-left controls; fade out after 3 s without mouse movement.
 //
 // Keyboard shortcuts avoid the QWERTY piano keys (A W S E D F T G Y H U J K O L P ; ' Z X Space):
-//   Tab = HUD · M = today's moves · V = River on/off · 1/2/3 = Normal/Stress/Flash · Esc = panic · Cmd/Ctrl+F = fullscreen
+//   Tab = HUD · M = today's moves · 1/2/3 = Normal/Stress/Flash · Esc = panic · Cmd/Ctrl+F = fullscreen
 import type { MidiController } from '../midi/input';
 import type { Replayer } from '../midi/replay';
 import type { Recorder } from '../midi/recorder';
 import type { FrameStats, LatencyProbe } from '../bench/stats';
-import type { LayerId, Layers, View, VisualMode } from '../render/visualizer';
+import type { LayerId, Layers, VisualMode } from '../render/visualizer';
 import { LAYERS } from '../render/layers';
 
 export interface ChromeDeps {
@@ -17,8 +17,6 @@ export interface ChromeDeps {
   stats: FrameStats;
   getMode(): VisualMode;
   setMode(m: VisualMode): void;
-  getView(): View;
-  setView(v: View): void;
   getLayers(): Layers;
   setLayer(id: LayerId, on: boolean): void;
   panic(): void;
@@ -163,12 +161,6 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
 
   const movesBtn = button("Moves", "Today's moves: what you've played, in which keys, and what's left to try (M)", () => toggleMoves());
   const toggleMoves = () => movesBtn.classList.toggle('on', deps.toggleMoves());
-  const riverBtn = button('River', 'Show the River piano roll beside the compass (V)', () => toggleView());
-  const toggleView = () => {
-    deps.setView(deps.getView() === 'river' ? 'compass' : 'river');
-    riverBtn.classList.toggle('on', deps.getView() === 'river');
-  };
-  riverBtn.classList.toggle('on', deps.getView() === 'river');
 
   // --- compass layers ----------------------------------------------------
   const layerWrap = document.createElement('span');
@@ -264,7 +256,7 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
 
   const hint = document.createElement('span');
   hint.className = 'note';
-  hint.textContent = 'QWERTY plays notes · Space = pedal · Tab = HUD · M = moves · V = River · 1/2/3 = modes · Esc = panic · ⌘F = fullscreen';
+  hint.textContent = 'QWERTY plays notes · Space = pedal · Tab = HUD · M = moves · 1/2/3 = modes · Esc = panic · ⌘F = fullscreen';
   el.append(hint, status);
 
   // --- keyboard ------------------------------------------------------------
@@ -282,10 +274,6 @@ export function buildChrome(el: HTMLElement, deps: ChromeDeps): void {
     if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     if (e.code === 'Escape') {
       deps.panic();
-      return;
-    }
-    if (e.code === 'KeyV') {
-      toggleView();
       return;
     }
     if (e.code === 'KeyM') {
