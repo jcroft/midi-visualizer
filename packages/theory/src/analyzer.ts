@@ -16,7 +16,7 @@ import {
   scoreAll,
 } from './chords';
 import { KeyTracker, diatonic, roman } from './key';
-import { mod12, keyLabel, parentMajor, spell, type KeyLike, type Mode } from './pitch';
+import { mod12, keyLabel, parentMajor, rotMask, spell, type KeyLike, type Mode } from './pitch';
 import { type ChordEvent, fitsVamp, landingFor, parentKey, predict } from './predict';
 import { type LibContext, MoveTracker } from './tracker';
 import type { LoopLock, MoveMark } from '../../../src/shared/analysis';
@@ -541,7 +541,24 @@ class AnalyzerImpl implements Analyzer {
         rel = (1 << 4) | (1 << 7) | (1 << 10) | (1 << 1);
         why = 'rootless 7♭9';
       }
-    } else if (prev.q === 'maj7' && isDom(ev.q) && mod12(ev.root - prev.root) === 2) {
+    } else if (
+      pr.qi === LYDIAN_QI &&
+      !((pr.rel >> 11) & 1) &&
+      mod12(ev.root - prev.root) === 7 &&
+      (!((pr.rel >> 4) & 1) || (!!key && key.tonic === ev.root))
+    ) {
+      // C6/9(♯11) with no 7th that moves on to G was D7/C, a dominant over its 7th (V⁴₂ of G):
+      // always when it has no 3rd, and with the 3rd (D9/C) when G is home. In C, it stays C lydian.
+      next = { root: mod12(prev.root + 2), q: '7' };
+      rel = rotMask(pr.rel, 2);
+      const was = this.nameOf(pr, key);
+      const nr: Reading = { root: next.root, qi: QINDEX_OF('7'), q: '7', rootInferred: false, bass: pr.bass, slash: prev.root, rel };
+      this.lastEvent = next;
+      this.lastReading = nr;
+      this.history[this.history.length - 1] = next;
+      const name = this.nameOf(nr, key);
+      return { was, name, why: `${spell(next.root, key)}7 over its 7th` };
+    } else if (prev.q === 'maj7' && pr.qi !== LYDIAN_QI && isDom(ev.q) && mod12(ev.root - prev.root) === 2) {
       // a real bass on the root keeps IV → V (FΔ7 → G7 over a low F)
       const deepRoot = this.lastEventBass >= 0 && this.lastEventBass < 48 && this.lastEventBass % 12 === prev.root;
       if (!deepRoot) {
@@ -749,6 +766,8 @@ function hasSemitoneRun(mask: number): boolean {
 
 const frameId = (k: KeyLike) => `${k.tonic}${k.mode}`;
 const QINDEX_OF = (q: string) => TEMPLATES.findIndex((t) => t.q === q);
+/** The lydian-over-its-root template (the second 'maj7'). */
+const LYDIAN_QI = TEMPLATES.findIndex((t, i) => t.q === 'maj7' && i !== QINDEX_OF('maj7'));
 
 const round2 = (x: number) => Math.round(x * 100) / 100;
 

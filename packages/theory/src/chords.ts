@@ -63,7 +63,7 @@ export const TEMPLATES: Template[] = [
     [4, 9, 11, 2],
     [11, 2, 4, 7],
   ]),
-  T('6', 'maj', { req: [4, 9], fifth: [7], ext: [2] }, -0.1, [[4, 7, 9, 2]]),
+  T('6', 'maj', { req: [4, 9], fifth: [7], ext: [2], alt: [6] }, -0.1, [[4, 7, 9, 2]]),
   T('m7', 'min', { req: [3, 10], fifth: [7], ext: [2, 5], alt: [9] }, 0, [
     [3, 7, 10, 2],
     [3, 10, 2],
@@ -83,13 +83,18 @@ export const TEMPLATES: Template[] = [
   T('dim7', 'dim', { req: [3, 9], fifth: [6], must: [6], ext: [2, 5, 8, 11] }),
   T('7sus4', 'dom', { req: [5, 10], fifth: [7], ext: [2, 9], alt: [1, 8] }, -0.1),
   T('maj', 'maj', { req: [4, 7], ext: [2, 9] }, -0.35),
+  // Lydian over its root, 3rd or 7th optional: D/C, D7/C and D13/C are C lydian (C6/9(♯11), CΔ9(♯11)).
+  // The root must sound; the bass usually decides it against the upper-structure reading.
+  T('maj7', 'maj', { req: [2, 6], fifth: [7], ext: [4, 9, 11], must: [0] }, -0.2),
   T('min', 'min', { req: [3, 7], ext: [2, 5] }, -0.35),
   T('aug', 'aug', { req: [4, 8], ext: [2] }, -0.5),
   T('dim', 'dim', { req: [3, 6] }, -0.6),
   T('sus4', 'sus', { req: [5, 7], ext: [2] }, -0.5),
 ];
 export const NQ = TEMPLATES.length;
-export const QINDEX: Record<string, number> = Object.fromEntries(TEMPLATES.map((t, i) => [t.q, i]));
+/** Template index by quality id: the first template wins (the lydian form shares 'maj7'). */
+export const QINDEX: Record<string, number> = {};
+TEMPLATES.forEach((t, i) => (QINDEX[t.q] ??= i));
 
 export function familyOf(q: string): Family | 'other' {
   const i = QINDEX[q];
@@ -107,11 +112,14 @@ export function qualityText(q: string, rel: number): string {
   const has = (iv: number) => ((rel >> iv) & 1) === 1;
   switch (q) {
     case 'maj7': {
-      const s = has(2) && has(9) ? 'Δ13' : has(2) ? 'Δ9' : 'Δ7';
+      // No 7th sounding (the lydian form): a 6/9 or add9 sound with its ♯11.
+      const s = !has(11) && rel ? (has(9) ? (has(2) ? '6/9' : '6') : has(2) ? '(add9)' : '') : has(2) && has(9) ? 'Δ13' : has(2) ? 'Δ9' : 'Δ7';
+      return has(6) ? (s.startsWith('(') ? `(add9♯11)` : `${s}(♯11)`) : s;
+    }
+    case '6': {
+      const s = has(2) ? '6/9' : '6';
       return has(6) ? `${s}(♯11)` : s;
     }
-    case '6':
-      return has(2) ? '6/9' : '6';
     case 'm7':
       return has(5) ? '–11' : has(2) ? '–9' : '–7';
     case 'm6':
