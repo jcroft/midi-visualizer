@@ -494,8 +494,14 @@ class AnalyzerImpl implements Analyzer {
         rel = (1 << 4) | (1 << 7) | (1 << 10) | (1 << 1);
         why = 'rootless 7♭9';
       }
-    } else if (pr.qi === LYDIAN_QI && !((pr.rel >> 4) & 1) && !((pr.rel >> 11) & 1) && mod12(ev.root - prev.root) === 7) {
-      // C6/9(♯11) with no 3rd or 7th that moves on to G was D7/C, a dominant over its 7th (V⁴₂ of G).
+    } else if (
+      pr.qi === LYDIAN_QI &&
+      !((pr.rel >> 11) & 1) &&
+      mod12(ev.root - prev.root) === 7 &&
+      (!((pr.rel >> 4) & 1) || (!!key && key.tonic === ev.root))
+    ) {
+      // C6/9(♯11) with no 7th that moves on to G was D7/C, a dominant over its 7th (V⁴₂ of G):
+      // always when it has no 3rd, and with the 3rd (D9/C) when G is home. In C, it stays C lydian.
       next = { root: mod12(prev.root + 2), q: '7' };
       rel = rotMask(pr.rel, 2);
       const was = this.nameOf(pr, key);

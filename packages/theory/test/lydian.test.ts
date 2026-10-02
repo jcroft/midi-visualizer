@@ -43,6 +43,17 @@ describe('lydian over the bass, not a slash chord', () => {
     expect(run(['F2 G3 B3 D4', 'E2 C3 G3 C4']).rereads[0]).toMatchObject({ name: 'G7/F' });
   });
 
+  it('in G, the same sound resolving to G is D9/C, the V over its 7th', () => {
+    const { names, rereads } = run(['A2 G3 C4 E4', 'D3 F#3 A3 C4 E4', 'G2 F#3 B3 D4', 'C2 E3 F#3 A3 D4', 'B1 D3 G3 B3']);
+    expect(names[3]).toBe('C6/9(♯11)');
+    expect(rereads.at(-1)).toMatchObject({ name: 'D9/C', was: 'C6/9(♯11)' });
+  });
+
+  it('in C, with its 3rd, it stays C lydian when it moves on to G', () => {
+    const { rereads } = run(['D3 F3 A3 C4 E4', 'G2 F3 B3 E4', 'C2 E3 F#3 A3 D4', 'G2 F3 B3 D4']);
+    expect(rereads.filter((r) => r.name === 'D9/C')).toEqual([]);
+  });
+
   it('does not reread the lydian tonic after a cadence', () => {
     expect(run(['G2 F3 B3 E4', 'C2 D3 F#3 A3', 'D3 F3 A3 C4 E4']).rereads).toEqual([]);
   });
