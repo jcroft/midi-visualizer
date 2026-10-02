@@ -22,12 +22,14 @@ export const LAYERS = [
   { id: 'moveShape', label: 'Move shape', title: 'The shape of the move you are in, drawn faintly inside the ring, its next step dotted' },
   { id: 'styleLens', label: 'Style lens', title: 'Which style families the last few bars draw from, by the key title; tap one to lean the predictions toward it' },
   { id: 'tensionCurve', label: 'Tension curve', title: 'A ribbon under the lead sheet that rises with harmonic tension and falls as it resolves' },
+  { id: 'tensionCaps', label: 'Tension caps', title: 'Each finished move caps the tension ribbon over its chords: the peak it reached and the drop to where it resolved' },
+  { id: 'keybed', label: 'Keybed', title: 'Experiment: an 88-key strip across the full width above the lead sheet, sounding keys lit by their role' },
   { id: 'weather', label: 'Harmonic weather', title: 'A soft glow behind the compass: cool on tonic, warm on dominant' },
   { id: 'tonicUp', label: 'Tonic at top', title: 'Turn the wheel so the key’s tonic sits at 12 o’clock' },
 ] as const;
 
 /** Layers that start off (the rest start on). */
-const OFF_BY_DEFAULT: readonly string[] = ['register', 'tonicUp'];
+const OFF_BY_DEFAULT: readonly string[] = ['register', 'tonicUp', 'keybed'];
 
 export type LayerId = (typeof LAYERS)[number]['id'];
 export type Layers = Record<LayerId, boolean>;

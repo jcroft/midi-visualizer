@@ -81,20 +81,32 @@ describe('line reading', () => {
 });
 
 describe('reharm offers', () => {
-  it('on G7 going to CΔ7: tritone sub, backdoor and a sub cycle, smoothest first', () => {
-    const offers = reharmsFor({ root: 7, q: '7' }, [pred(0, 'maj7', 0.7, 'CΔ7')], V('F3 B3 E4'), C);
-    expect(offers.map((o) => o.why).sort()).toEqual(['backdoor', 'sub cycle', 'tritone sub']);
-    expect(offers.find((o) => o.why === 'tritone sub')!.path.map((s) => s.name)).toEqual(['D♭7']);
+  it('on G7 going to CΔ7: library approaches to C, named by their move, smoothest first', () => {
+    const offers = reharmsFor({ root: 7, q: '7' }, [pred(0, 'maj7', 0.7, 'CΔ7')], V('F3 B3 E4'), C, { jazz: 1 });
+    expect(offers.map((o) => o.why)).toEqual(['tritone sub', 'minor plagal', 'backdoor']);
+    expect(offers[0].path.map((s) => s.name)).toEqual(['D♭7']);
+    expect(offers[0].move).toMatchObject({ id: 'jazz.tritone-sub', styles: ['jazz'] });
     expect(offers.find((o) => o.why === 'backdoor')!.path.map((s) => s.name)).toEqual(['B♭7']);
-    expect(offers.find((o) => o.why === 'sub cycle')!.path.map((s) => s.name)).toEqual(['E♭7', 'A♭7', 'D♭7']);
-    // F and B are the guide tones of Db7 too: the tritone sub costs least.
-    expect(offers[0].why).toBe('tritone sub');
     for (const o of offers) expect(o.target).toBe(0);
   });
 
-  it('on D–7 going to G7: ii–subV and the backdoor ii–V', () => {
+  it('the style in play reorders them: a pop session hears plagal and ♭VI–♭VII–I first, as triads', () => {
+    const offers = reharmsFor({ root: 7, q: '7' }, [pred(0, 'maj', 0.7, 'C')], V('G3 B3 D4'), C, { pop: 1, rock: 0.6 }, true);
+    expect(offers.map((o) => o.why)).toContain('♭VI–♭VII–I');
+    expect(offers.find((o) => o.why === '♭VI–♭VII–I')!.path.map((s) => s.name)).toEqual(['B♭']);
+    expect(offers.map((o) => o.why)).not.toContain('tritone sub');
+  });
+
+  it('the sub cycle is still offered by hand', () => {
+    const offers = reharmsFor({ root: 7, q: '7' }, [pred(0, 'maj7', 0.7, 'CΔ7')], [], C, { jazz: 1 });
+    expect(offers.length).toBe(3);
+    const all = reharmsFor({ root: 7, q: '7' }, [pred(0, 'maj7', 0.7, 'CΔ7')], V('Eb3 G3 Db4'), C, { jazz: 1 });
+    expect(all.find((o) => o.why === 'sub cycle')?.path.map((s) => s.name)).toEqual(['E♭7', 'A♭7', 'D♭7']);
+  });
+
+  it('on D–7 going to G7: ii–♭II7–I and the backdoor ii–V', () => {
     const offers = reharmsFor({ root: 2, q: 'm7' }, [pred(7, '7', 0.6, 'G7')], V('F3 A3 C4 E4'), C);
-    expect(offers.map((o) => o.why).sort()).toEqual(['backdoor ii–V', 'ii–subV']);
+    expect(offers.map((o) => o.why).sort()).toEqual(['backdoor ii–V', 'ii–♭II7–I']);
     expect(offers.find((o) => o.why === 'backdoor ii–V')!.path.map((s) => s.name)).toEqual(['F–7', 'B♭7']);
   });
 
@@ -129,5 +141,14 @@ describe('tension curve', () => {
 describe('reharm offers in a modal frame', () => {
   it('a dorian vamp’s IV⁷ is color, so nothing is offered', () => {
     expect(reharmsFor({ root: 2, q: 'm7' }, [pred(7, '7', 0.6, 'G7')], [], Ddor)).toEqual([]);
+  });
+  it('a dorian vamp’s G7 heading back to D–7 gets nothing either', () => {
+    expect(reharmsFor({ root: 7, q: '7' }, [pred(2, 'm7', 0.7, 'D–7')], [], Ddor)).toEqual([]);
+  });
+  it('G mixolydian (= V of C) heading for C is offered the C-major alternates', () => {
+    const Gmix: KeyLike = { tonic: 7, mode: 'mixolydian' };
+    const offers = reharmsFor({ root: 7, q: '7' }, [pred(0, 'maj7', 0.7, 'CΔ7')], V('F3 B3 E4'), Gmix, { jazz: 1 });
+    expect(offers.map((o) => o.why)).toContain('tritone sub');
+    expect(offers.find((o) => o.why === 'tritone sub')!.path[0].name).toBe('D♭7');
   });
 });

@@ -18,7 +18,7 @@ import type { Layout } from './layout';
 import type { SpriteBatch } from './sprites';
 import { TextLayer } from './text';
 import { DISPLAY_FONT, HISTORY_FADE_POW, HISTORY_MAX, HISTORY_SPEED, MONO_FONT } from './tuning';
-import { ROLE_RGB, fnRgb } from './taxonomy';
+import { OFFER_CSS, ROLE_RGB, fnRgb } from './taxonomy';
 
 /** At most this many voices (lowest first: the left hand) get a hidden-voice line. */
 const VOICE_CAP = 5;
@@ -80,6 +80,24 @@ interface Future {
   roman: string;
   root: number;
   q: string;
+  /** Why it's predicted ("completes ii–V–I"), shown under the first future chord. */
+  why?: string;
+  /** The library move it would continue, so that move's forming bracket can reach over it. */
+  moveId?: string;
+}
+
+/** An alternate change (a reharm offer), printed above the next chord like a Real Book alternate. */
+export interface Alternate {
+  name: string;
+  why: string;
+}
+
+/** A finished move on the tension ribbon: the peak it climbed to and where it came to rest. */
+interface Cap {
+  from: number;
+  to: number;
+  name: string;
+  layer: TextLayer;
 }
 
 export class HistoryStrip {
@@ -111,6 +129,16 @@ export class HistoryStrip {
   private bracketRow = 16;
   private loop: LoopLock | null = null;
   private readonly loopLayer: TextLayer;
+  private readonly altLayer: TextLayer;
+  private alts: Alternate[] = [];
+  private showFutureNow = false;
+  private altKey = '';
+  /** Tension the predicted chord would bring (dotted forecast past now), or null. */
+  private forecast: number | null = null;
+  private readonly caps: Cap[] = [];
+  private readonly spareCaps: TextLayer[] = [];
+  /** The Tension caps layer. */
+  capsOn = true;
   private loopKey = '';
   private loopNames: { name: string; roman: string; root: number }[] = [];
   private loopCur = -1;
@@ -133,6 +161,40 @@ export class HistoryStrip {
       (i) => new TextLayer(scene, 60, (ctx, w, h) => this.drawFuture(ctx, w, h, i), { out: 0.15, outRise: 0, in: 0.25, inRise: 0, delay: 0.35 }),
     );
     this.loopLayer = new TextLayer(scene, 60, (ctx, w, h) => this.drawLoop(ctx, w, h), { out: 0.15, outRise: 0, in: 0.2, inRise: 0, delay: 0 });
+    this.altLayer = new TextLayer(scene, 60, (ctx, w, h) => this.drawAlts(ctx, w, h), { out: 0.15, outRise: 0, in: 0.25, inRise: 0, delay: 0.4 });
+  }
+
+  /** Alternate changes for the next chord (reharm offers, named by their move). */
+  setAlternates(alts: Alternate[]): void {
+    const key = alts.map((a) => a.name + a.why).join('|');
+    if (key === this.altKey) return;
+    this.altKey = key;
+    this.alts = alts;
+    this.altLayer.changed();
+  }
+
+  /** The tension the predicted next chord would bring, for the dotted forecast (null: none). */
+  setForecast(v: number | null): void {
+    this.forecast = v;
+  }
+
+  /** A move resolved: cap the tension ribbon over its chords (seq numbers from..to). */
+  addCap(from: number, to: number, name: string): void {
+    if (this.caps.some((c) => c.to === to)) return;
+    const layer = this.spareCaps.pop() ?? new TextLayer(this.scene, 59, (ctx, w, h) => this.drawCap(ctx, w, h, layer), { out: 0.2, outRise: 0, in: 0.3, inRise: 0, delay: 0 });
+    layer.place(0, 0, this.W, Math.max(12, this.romanSize * 1.2), this.L.dpr);
+    const cap: Cap = { from, to, name, layer };
+    (layer as TextLayer & { cap?: Cap }).cap = cap;
+    this.caps.push(cap);
+    layer.changed();
+    if (this.caps.length > 12) this.retireCap(this.caps[0]);
+  }
+
+  private retireCap(c: Cap): void {
+    this.caps.splice(this.caps.indexOf(c), 1);
+    c.layer.opacity = 0;
+    c.layer.changed();
+    this.spareCaps.push(c.layer);
   }
 
   /** Scroll speed, px per second. */
@@ -170,6 +232,12 @@ export class HistoryStrip {
     }
     this.loopLayer.place(0, this.y, this.L.w, this.H, dpr);
     this.loopKey = '';
+    this.altLayer.place(0, 0, this.L.w / 2, Math.max(14, this.romanSize * 1.45), dpr);
+    this.altLayer.changed();
+    for (const c of this.caps) {
+      c.layer.place(0, 0, this.W, Math.max(12, this.romanSize * 1.2), dpr);
+      c.layer.changed();
+    }
   }
 
   /** Top edge of the strip (y-up), for keeping prediction labels clear of it. */
@@ -297,18 +365,25 @@ export class HistoryStrip {
   }
 
   setFuture(f: Future[]): void {
-    const key = f.map((x) => x.name + x.roman).join('|');
+    const key = f.map((x) => x.name + x.roman + (x.why ?? '') + (x.moveId ?? '')).join('|');
     if (key === this.futureKey) return;
     this.futureKey = key;
     this.future = f;
     for (let i = 0; i < 2; i++) {
       this.futureW[i] = f[i] ? this.nameWidth(f[i].name, f[i].roman) : 0;
+      if (f[i]?.why) {
+        this.measure.font = `500 ${this.romanSize}px ${MONO_FONT}`;
+        const rw = f[i].roman ? this.measure.measureText(f[i].roman).width + this.romanSize * 0.6 : 0;
+        this.measure.font = `500 ${this.romanSize * 0.85}px ${MONO_FONT}`;
+        this.futureW[i] = Math.max(this.futureW[i], rw + this.measure.measureText(f[i].why!).width + 8);
+      }
       this.futureLayers[i].changed();
     }
   }
 
   draw(sp: SpriteBatch, t: number, visible: boolean, showFuture: boolean, voices = false): void {
     const { cx } = this.L;
+    this.showFutureNow = visible && showFuture;
     const v = this.speed;
     const gap = this.nameSize * 0.9;
     const span = cx - 24;
@@ -390,7 +465,11 @@ export class HistoryStrip {
     }
 
     if (visible && voices && this.voicesOn) this.drawVoices(sp, t, gap, showFuture);
-    if (visible && this.tensionOn) this.drawTension(sp, t);
+    if (visible && this.tensionOn) this.drawTension(sp, t, gap);
+    else for (const c of this.caps) {
+      c.layer.opacity = 0;
+      c.layer.update(t);
+    }
 
     // The future, right of now: outline names with dotted underlines.
     let fx = cx + gap;
@@ -408,6 +487,14 @@ export class HistoryStrip {
         fx += w + gap;
       }
     }
+
+    // Alternate changes over the next chord, on the second bracket row.
+    const ax = cx + gap;
+    const ay = this.y + this.H / 2 + 2 + this.bracketRow * 1.57;
+    this.altLayer.opacity = visible && showFuture && this.alts.length && this.future.length ? 0.95 : 0;
+    this.altLayer.at(ax + this.L.w / 4, ay);
+    this.altLayer.moveTo(ax + this.L.w / 4, ay);
+    this.altLayer.update(t);
   }
 
   /**
@@ -501,7 +588,7 @@ export class HistoryStrip {
    * lead sheet. Its height and heat follow tension, so a chorus that stayed high
    * and never came down is plain to see. Structure tier: tinted, no glow.
    */
-  private drawTension(sp: SpriteBatch, t: number): void {
+  private drawTension(sp: SpriteBatch, t: number, gap: number): void {
     const { cx } = this.L;
     if (!this.tenCount) return;
     const v = this.speed;
@@ -526,6 +613,66 @@ export class HistoryStrip {
       const h = Math.max(1, val * hh);
       sp.rect(mx, base + h / 2, hw, h / 2, r, g, b, (0.45 + 0.45 * val) * fade);
     }
+
+    // Forecast: dotted from now to where the predicted chord would put the tension.
+    const now = this.tenV[(this.tenHead + TENSION_CAP - 1) % TENSION_CAP];
+    if (this.forecast !== null && this.showFutureNow && this.future[0]) {
+      const x1 = cx + gap + this.futureW[0] * 0.6;
+      const f = this.forecast;
+      for (let x = cx + 3; x <= x1; x += 6) {
+        const u = (x - cx) / (x1 - cx);
+        const val = now + (f - now) * u * u * (3 - 2 * u);
+        const r = CALM[0] + (HOT[0] - CALM[0]) * val, g = CALM[1] + (HOT[1] - CALM[1]) * val, b = CALM[2] + (HOT[2] - CALM[2]) * val;
+        sp.disc(x, base + Math.max(1, val * hh), 1.2, r, g, b, 0.6);
+      }
+    }
+
+    // Caps: each finished move draws a hairline over its chords at the peak it reached, and a
+    // drop to where it came to rest, so a big release (IV–iv–I) and a flat loop look different.
+    const capsOn = this.capsOn;
+    for (const c of [...this.caps]) {
+      let first: Entry | null = null, last: Entry | null = null;
+      for (const e of this.entries) {
+        if (e.seq < c.from || e.seq > c.to) continue;
+        first ??= e;
+        last = e;
+      }
+      if (!first || !last) {
+        if (this.entries.length && this.entries[0].seq > c.to) this.retireCap(c);
+        c.layer.opacity = 0;
+        c.layer.update(t);
+        continue;
+      }
+      const peak = this.tenMax(first.t0, Number.isNaN(last.t0) ? t : last.t0);
+      const rest = this.tenMax(last.t0, Number.isNaN(last.t1) ? t : Math.min(last.t1, last.t0 + 0.6));
+      const x0 = Math.max(24, first.x0), xr = last.x0;
+      const fade = Math.pow(Math.max(0, 1 - (cx - x0) / span), 0.8);
+      const op = capsOn ? fade : 0;
+      const yp = base + Math.max(2, peak * hh) + 3;
+      const yr = base + Math.max(1, rest * hh);
+      if (op > 0.01 && xr > x0) {
+        sp.rect((x0 + xr) / 2, yp, (xr - x0) / 2, 0.6, 0.92, 0.84, 0.66, 0.75 * op);
+        sp.rect(x0, yp - 2, 0.6, 2, 0.92, 0.84, 0.66, 0.75 * op);
+        sp.rect(xr, (yp + yr) / 2, 0.7, Math.max(1, (yp - yr) / 2), 0.92, 0.84, 0.66, 0.75 * op);
+      }
+      const lh = Math.max(12, this.romanSize * 1.2);
+      c.layer.opacity = op * 0.9;
+      c.layer.at(x0 + this.W / 2, yp + lh / 2 + 1);
+      c.layer.moveTo(x0 + this.W / 2, yp + lh / 2 + 1);
+      c.layer.update(t);
+    }
+  }
+
+  /** Highest tension sampled between two times (0 when none). */
+  private tenMax(t0: number, t1: number): number {
+    let m = 0;
+    for (let i = 0; i < this.tenCount; i++) {
+      const j = (this.tenHead + TENSION_CAP - 1 - i) % TENSION_CAP;
+      const tt = this.tenT[j];
+      if (tt < t0) break;
+      if (tt <= t1 && this.tenV[j] > m) m = this.tenV[j];
+    }
+    return m;
   }
 
   /** Content of the loop block: the lap's chords in played order, which one sounds, laps so far. */
@@ -668,7 +815,9 @@ export class HistoryStrip {
       live.add(key);
       const x0 = inFold ? cx - this.loopW : first.x0;
       const cur = Number.isNaN(last.t1);
-      const x1 = inFold ? cx : cur ? cx : Math.max(x0 + 8, last.x1 - gap * 0.4);
+      // a forming move whose next step is the predicted chord reaches, dotted, over it
+      const reach = cur && m.state === 'forming' && m.level === 0 && this.showFutureNow && !!this.future[0] && this.future[0].moveId === m.id;
+      const x1 = inFold ? cx : reach ? cx + gap + this.futureW[0] * 0.9 : cur ? cx : Math.max(x0 + 8, last.x1 - gap * 0.4);
       const fade = Math.pow(Math.max(0, 1 - (cx - x0) / span), 0.7) * 0.6 + (cur ? 0.4 : 0.25);
       const y = base + this.bracketRow * (m.level + 0.15);
       const left = m.state === 'left';
@@ -784,10 +933,47 @@ export class HistoryStrip {
     ctx.strokeStyle = cssOklch(f.root, 0.72, 0.07, 1);
     ctx.strokeText(f.name, 0.5, y);
     y += this.nameSize * 1.15;
+    let x = 0;
     if (f.roman) {
       ctx.font = `500 ${this.romanSize}px ${MONO_FONT}`;
       ctx.fillStyle = cssOklch(f.root, 0.62, 0.05, 1);
       ctx.fillText(f.roman, 0, y);
+      x = ctx.measureText(f.roman).width + this.romanSize * 0.6;
     }
+    // the reason, moved here from the orbit, on the numeral's line: "i⁷  completes ii–V–I"
+    if (f.why) {
+      ctx.font = `500 ${this.romanSize * 0.85}px ${MONO_FONT}`;
+      ctx.fillStyle = 'rgba(190,196,214,0.6)';
+      ctx.fillText(f.why, x, y + this.romanSize * 0.1);
+    }
+  }
+
+  /** Alternate changes in one row: "(D♭7) tritone sub · jazz   (B♭7) backdoor · jazz/gospel". */
+  private drawAlts(ctx: CanvasRenderingContext2D, _w: number, h: number): void {
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    let x = 0.5;
+    for (const a of this.alts) {
+      ctx.font = `500 ${this.romanSize * 1.25}px ${DISPLAY_FONT}`;
+      ctx.fillStyle = OFFER_CSS;
+      const name = `(${a.name})`;
+      ctx.fillText(name, x, h / 2);
+      x += ctx.measureText(name).width + this.romanSize * 0.4;
+      ctx.font = `500 ${this.romanSize * 0.8}px ${MONO_FONT}`;
+      ctx.fillStyle = 'rgba(190,186,214,0.55)';
+      ctx.fillText(a.why, x, h / 2 + 1);
+      x += ctx.measureText(a.why).width + this.romanSize * 1.6;
+    }
+  }
+
+  /** A cap's label: the move's name, small, over where it resolved. */
+  private drawCap(ctx: CanvasRenderingContext2D, _w: number, h: number, layer: TextLayer): void {
+    const c = (layer as TextLayer & { cap?: Cap }).cap;
+    if (!c || !this.caps.includes(c)) return;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.font = `500 ${this.romanSize * 0.8}px ${MONO_FONT}`;
+    ctx.fillStyle = 'rgba(214,206,190,0.7)';
+    ctx.fillText(c.name, 1, h / 2);
   }
 }

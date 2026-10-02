@@ -1,5 +1,6 @@
 // Two small DOM panels for the move library:
-//   StyleLens: the style families the last few bars draw from, top right. Tap a
+//   StyleLens: the style families the last few bars draw from, under the key heading
+//     at the top left. Tap a
 //     family to lean the predictions toward it; tap it again to let go.
 //   MovesRail: today's moves down the right side (M), each with its shape on the
 //     circle of fifths, how often it landed and in which keys; the moves not
@@ -26,12 +27,12 @@ export class StyleLens {
   constructor(private readonly lean: (style: string | null) => void) {
     this.el = panel('lens', {
       position: 'fixed',
-      top: '14px',
-      right: '16px',
+      top: '12.5vh',
+      left: 'calc(4vw - 6px)',
       display: 'flex',
       gap: '4px',
       alignItems: 'baseline',
-      font: '11px var(--mono)',
+      font: 'max(11px, 1.05vh) var(--mono)',
       letterSpacing: '0.08em',
       color: 'var(--dim)',
       transition: 'opacity 0.6s',

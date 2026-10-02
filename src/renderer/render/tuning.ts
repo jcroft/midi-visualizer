@@ -85,7 +85,7 @@ export const COMPASS_R_H = 0.27;
  */
 export const SHEET_FRAC = 0.25;
 export const COMPASS_ONLY_R_W = 0.22;
-export const COMPASS_ONLY_R_H = 0.37;
+export const COMPASS_ONLY_R_H = 0.4;
 export const COMPASS_ONLY_CY = 0.45;
 /** Radius stack, as multiples of R: needle track, key arc, prediction orbit, prediction labels. */
 export const NEEDLE_R = 1.06;
@@ -148,7 +148,7 @@ export const HISTORY_MAX = 32;
  * height (measured from the top), centered in the space left of the ring and its
  * 9 o'clock labels (cx − CLEAR·R). Its sizes scale with U = U_R·R.
  */
-export const STACK_TOP_FRAC = 0.16;
+export const STACK_TOP_FRAC = 0.22;
 export const STACK_BOTTOM_FRAC = 0.7;
 export const STACK_WING_CLEAR_R = 1.75;
 export const STACK_WING_U_R = 1.6;
@@ -163,10 +163,11 @@ export const STACK_SLIDE = 0.25;
 export const STACK_LINE_GROW = 0.3;
 export const STACK_GHOST_FADE = 2;
 
-// ---------- key title (compass view) ----------
-/** Center of the key title above the ring, and its size, as multiples of R. */
-export const KEY_TITLE_R = 1.52;
-export const KEY_TITLE_SIZE = 0.26;
+// ---------- key heading (compass view) ----------
+/** The key as a page heading at the top left: left edge (× width), center (× height from the top), tonic size (× height). */
+export const KEY_BLOCK_X = 0.04;
+export const KEY_BLOCK_Y = 0.075;
+export const KEY_BLOCK_SIZE = 0.075;
 
 // ---------- tonic-up wheel and harmonic weather ----------
 /** Tonic-up: how fast the wheel turns to put a confirmed tonic at 12 o'clock (rad/s natural frequency). */
