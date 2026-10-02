@@ -1,8 +1,9 @@
 // Rule-based functional grammar for next-chord prediction. Pure, no deps.
-import { familyOf, isDom, isMajTonic, isPreDom, plainText } from './chords';
+import { familyOf, isDom, isPreDom, plainText } from './chords';
 import { diatonic, roman } from './key';
 import { keyLabel, mod12, parentMajor, spell, type KeyLike } from './pitch';
-import type { Fn, Landing, Prediction, PredictionKind, PredictionStep } from '../../../src/shared/analysis';
+import type { Fn, Landing, MoveRef, Prediction, PredictionKind, PredictionStep } from '../../../src/shared/analysis';
+import type { LibContext } from './tracker';
 
 export interface ChordEvent {
   root: number;
@@ -235,18 +236,7 @@ function rulesFor(c: ChordEvent, key: KeyLike | null, history: ChordEvent[]): Ru
       break;
   }
 
-  // Coltrane cycle: two equal major-third root moves in a row.
-  if (history.length >= 3) {
-    const a = history[history.length - 3],
-      b = history[history.length - 2],
-      cc = history[history.length - 1];
-    const m1 = mod12(b.root - a.root),
-      m2 = mod12(cc.root - b.root);
-    const jump = mod12(cc.root - a.root);
-    if ((m1 === 4 || m1 === 8) && m1 === m2 && isMajTonic(cc.q)) add(m1 + 7, '7', 0.6, 'Coltrane cycle');
-    else if ((jump === 4 || jump === 8) && isMajTonic(a.q) && isDom(b.q) && isMajTonic(cc.q) && m2 === 5)
-      add(jump + 7, '7', 0.45, 'Coltrane cycle');
-  }
+  // (Coltrane changes are a move in the library now: see moves.ts.)
   return R;
 }
 
@@ -297,49 +287,133 @@ function describe(root: number, q: string, frame: KeyLike | null, forced?: Predi
   return { roman: rn, kind: 'chromatic' };
 }
 
-/** At most 3 predictions with normalized probabilities and a reason each; the top one carries the likely chord after it. */
-export function predict(c: ChordEvent | null, key: KeyLike | null, history: ChordEvent[], depth = 0): Prediction[] {
+interface Cand {
+  root: number;
+  q: string;
+  /** Probability from the rules and from the library, before blending. */
+  pr: number;
+  pl: number;
+  why: string;
+  libWhy: string;
+  kind?: PredictionKind;
+  move?: MoveRef;
+  loop?: boolean;
+  then?: { root: number; q: string };
+}
+
+/** Triad session: predict what the player would play (G, not G7; a V stays V7 if 7ths are around). */
+function asTriad(q: string, dom7: boolean): string {
+  switch (q) {
+    case 'maj7':
+    case '6':
+      return 'maj';
+    case 'm7':
+    case 'm6':
+      return 'min';
+    case '7':
+      return dom7 ? '7' : 'maj';
+    default:
+      return q;
+  }
+}
+
+/**
+ * At most 3 predictions with normalized probabilities and a reason each; the
+ * top one carries the likely chord after it. With `lib`, the rules blend with
+ * the move library: P = α·P_lib + (1−α)·P_rules, α growing with the strongest
+ * match, and a chord the library backs names its move.
+ */
+export function predict(c: ChordEvent | null, key: KeyLike | null, history: ChordEvent[], depth = 0, lib?: LibContext | null): Prediction[] {
   if (!c) return [];
   const rules = rulesFor(c, key, history);
   let sum = 0;
   for (const r of rules) sum += r.w;
-  // merge duplicates (same root+quality): keep the strongest reason, add weight
-  const merged: { root: number; q: string; w: number; why: string; bw: number; kind?: PredictionKind }[] = [];
+  // merge duplicates (same root + family): keep the strongest reason, add weight
+  const merged: Cand[] = [];
+  const find = (root: number, q: string) => merged.find((x) => x.root === root && familyOf(x.q) === familyOf(q));
+  const best = new Map<Cand, number>();
   for (const r of rules) {
     const root = mod12(c.root + r.dr);
-    const m = merged.find((x) => x.root === root && x.q === r.q);
+    const m = find(root, r.q);
     if (m) {
-      m.w += r.w;
-      if (r.w > m.bw) {
-        m.bw = r.w;
+      m.pr += r.w / sum;
+      if (r.w > (best.get(m) ?? 0)) {
+        best.set(m, r.w);
         m.why = r.why;
         m.kind = r.kind;
+        m.q = r.q;
       }
-    } else merged.push({ root, q: r.q, w: r.w, why: r.why, bw: r.w, kind: r.kind });
+    } else {
+      const x: Cand = { root, q: r.q, pr: r.w / sum, pl: 0, why: r.why, libWhy: '', kind: r.kind };
+      best.set(x, r.w);
+      merged.push(x);
+    }
   }
-  merged.sort((a, b) => b.w - a.w);
-  const out: Prediction[] = merged.slice(0, 3).map((m) => {
-    const d = describe(m.root, m.q, key, m.kind);
+  const alpha = lib && lib.cands.length ? lib.alpha : 0;
+  if (lib && alpha > 0) {
+    // the library's view: the strongest match per chord, others add a little
+    const per = new Map<Cand, { top: number; rest: number }>();
+    for (const lc of lib.cands) {
+      let m = find(lc.root, lc.q);
+      if (!m) {
+        m = { root: lc.root, q: lc.q, pr: 0, pl: 0, why: '', libWhy: '', kind: undefined };
+        merged.push(m);
+      }
+      const a = per.get(m) ?? { top: 0, rest: 0 };
+      if (lc.w > a.top) {
+        a.rest += a.top;
+        a.top = lc.w;
+        m.libWhy = lc.why;
+        m.move = lc.move;
+        m.loop = lc.loop;
+        m.then = lc.then;
+        if (m.pr === 0 || lc.loop) m.q = lc.q;
+      } else a.rest += lc.w;
+      per.set(m, a);
+    }
+    // sharpened, so the strongest match leads and a crowd of weak ones doesn't
+    const lw = (a: { top: number; rest: number }) => Math.pow(a.top + 0.3 * a.rest, 3);
+    let lsum = 0;
+    for (const a of per.values()) lsum += lw(a);
+    for (const [m, a] of per) m.pl = lw(a) / lsum;
+  }
+  const P = (m: Cand) => alpha * m.pl + (1 - alpha) * m.pr;
+  merged.sort((a, b) => P(b) - P(a));
+  const top3 = merged.slice(0, 3);
+  const tot = merged.reduce((a, m) => a + P(m), 0) || 1;
+  const out: Prediction[] = top3.map((m) => {
+    const q = lib?.triads ? asTriad(m.q, lib.dom7) : m.q;
+    // the library names the chord when it carries a real share of it
+    const libLed = !!m.move && alpha * m.pl >= 0.4 * P(m);
+    const d = describe(m.root, q, key, libLed ? undefined : m.kind);
     const p: Prediction = {
       root: m.root,
-      name: spell(m.root, key) + plainText(m.q),
-      p: Math.round((m.w / sum) * 100) / 100,
-      why: m.why,
-      q: m.q,
+      name: spell(m.root, key) + plainText(q),
+      p: Math.round((P(m) / tot) * 100) / 100,
+      why: libLed ? m.libWhy : m.why || m.libWhy,
+      q,
       roman: d.roman,
-      fn: functionOf(m.root, m.q, key),
+      fn: functionOf(m.root, q, key),
       kind: d.kind,
     };
     if (d.tonicizes) p.tonicizes = d.tonicizes;
+    if (m.move && libLed) p.move = m.move;
+    if (m.loop && libLed) p.loop = true;
     return p;
   });
-  // second step: what usually follows the most likely next chord
+  // second step: what usually follows the most likely next chord (the move says, when it led)
   if (depth === 0 && out.length && out[0].p >= THEN_MIN_P) {
     const top = out[0];
-    const next = predict({ root: top.root, q: top.q }, key, [...history, { root: top.root, q: top.q }], 1)[0];
-    if (next && next.p >= THEN_MIN_P) {
-      const step: PredictionStep = { root: next.root, name: next.name, q: next.q, roman: next.roman, p: next.p };
-      top.then = step;
+    const tm = top3[0];
+    if (top.move && tm.then) {
+      const q = lib?.triads ? asTriad(tm.then.q, lib.dom7) : tm.then.q;
+      top.then = { root: tm.then.root, name: spell(tm.then.root, key) + plainText(q), q, roman: describe(tm.then.root, q, key).roman, p: top.p };
+    } else {
+      const next = predict({ root: top.root, q: top.q }, key, [...history, { root: top.root, q: top.q }], 1)[0];
+      if (next && next.p >= THEN_MIN_P) {
+        const step: PredictionStep = { root: next.root, name: next.name, q: next.q, roman: next.roman, p: next.p };
+        top.then = step;
+      }
     }
   }
   return out;
