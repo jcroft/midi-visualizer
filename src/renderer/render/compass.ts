@@ -7,7 +7,7 @@
 // key arc 1.14, prediction orbit 1.30, prediction labels from 1.40 outward.
 import { BufferAttribute, BufferGeometry, DynamicDrawUsage, Mesh, MeshBasicNodeMaterial, type Scene, Vector3 } from 'three/webgpu';
 import { uniform, vec4 } from 'three/tsl';
-import type { Analysis, Fn, Prediction } from '@shared/analysis';
+import type { Analysis, Fn, MoveMark, Prediction } from '@shared/analysis';
 import { BRIGHT_RGB, DIM_RGB, NOTE_RGB, POLY_RGB, cssOklch, fifthsPos } from './color';
 import { type Layers, defaultLayers } from './layers';
 import { type Layout, premultipliedBlend } from './layout';
@@ -207,7 +207,12 @@ export class Compass {
   private predKey = '';
   private predT = -1e9;
   private badge = '';
+  /** The rest of the badge, drawn lower case after the name: "gospel · 3rd today", "×4". */
+  private badgeRest = '';
   private badgeRoot = 0;
+  /** The move in force, for its shape inside the ring. */
+  private shape: MoveMark | null = null;
+  private shapeT = -1e9;
   private badgeT = -1e9;
   private keyTonicName = '';
   private keyModeName = '';
@@ -347,12 +352,15 @@ export class Compass {
 
   setLayers(layers: Layers): void {
     const stackChanged = layers.stack !== this.layers.stack;
-    const voicesChanged = layers.voices !== this.layers.voices || layers.tensionCurve !== this.layers.tensionCurve;
+    const voicesChanged =
+      layers.voices !== this.layers.voices || layers.tensionCurve !== this.layers.tensionCurve || layers.moves !== this.layers.moves || layers.loopLock !== this.layers.loopLock;
     const scaleChanged = layers.scale !== this.layers.scale;
     this.layers = { ...layers };
     if (voicesChanged) {
       this.history.voicesOn = layers.voices;
       this.history.tensionOn = layers.tensionCurve;
+      this.history.bracketsOn = layers.moves;
+      this.history.loopOn = layers.loopLock;
       this.history.layout();
     }
     if (scaleChanged) this.chordLayer.changed();
@@ -448,7 +456,7 @@ export class Compass {
         const keyChange = kl && kl !== this.histKey && this.histKey ? kl : '';
         if (kl) this.histKey = kl;
         this.curFn = a.landing?.fn ?? fnFromRoman(roman);
-        this.history.push(c.name, roman, c.root, this.curFn, keyChange, t);
+        this.history.push(c.name, roman, c.root, this.curFn, keyChange, t, a.seq);
         this.chordEvent = true;
       } else {
         this.history.refine(c.name, roman, c.root);
@@ -482,8 +490,16 @@ export class Compass {
         } else {
           this.ripple(c.root, t, 0.3, RIPPLE_TIME * 2); // a surprise: one slow, curious shimmer
         }
-        if (land.label) {
+        const mv = land.move;
+        if (mv) {
+          this.badge = mv.name;
+          this.badgeRest = mv.loop ? `×${Math.max(1, mv.laps)}` : [mv.style, `${ordinal(mv.count)} today`].filter(Boolean).join(' · ');
+          this.badgeRoot = c.root;
+          this.badgeT = t;
+          this.badgeLayer.changed();
+        } else if (land.label) {
           this.badge = land.label;
+          this.badgeRest = '';
           this.badgeRoot = c.root;
           this.badgeT = t;
           this.badgeLayer.changed();
@@ -491,6 +507,17 @@ export class Compass {
       }
       if (a.changed) this.lastRoot = c.root;
     }
+
+    // Moves: brackets on the lead sheet, the shape inside the ring, loop lock.
+    if (a.changed && a.moves) {
+      this.history.setMarks(a.moves);
+      const main = a.moves.find((m) => m.level === 0 && m.to === a.seq && m.state !== 'left') ?? null;
+      if (main || (this.shape && a.moves.some((m) => m.key === this.shape!.key))) {
+        this.shape = main;
+        this.shapeT = t;
+      }
+    }
+    this.history.setLoop(a.loop);
 
     if (!c) {
       this.history.end(t);
@@ -629,7 +656,8 @@ export class Compass {
     const subSize = Math.max(10, R * 0.04 * (scale < 1 ? 0.85 : 1));
     const parts: string[] = [];
     if (p.roman) parts.push(p.roman);
-    if (top) parts.push(p.why);
+    // The reason; every label says which move it would continue ("completes ii–V–I", "Axis 3/4").
+    if (top || p.move) parts.push((p.loop ? '↻ ' : '') + p.why);
     if (p.kind === 'modulating' && p.tonicizes) parts.push(`→ ${p.tonicizes}`);
     const sub = parts.join('  ·  ');
 
@@ -668,6 +696,14 @@ export class Compass {
         y1 += dy;
         ay += dy;
       }
+    }
+    // And below the top edge of the window.
+    const ceil = this.L.h - R * 0.03;
+    if (y1 > ceil) {
+      const dy = y1 - ceil;
+      y0 -= dy;
+      y1 -= dy;
+      ay -= dy;
     }
     return { root: p.root, name: p.name, sub, nameSize, subSize, align, ax, ay, x0, y0, x1, y1, opacity };
   }
@@ -766,6 +802,9 @@ export class Compass {
         sp.line(x0, y0, cx, kb.y0 - 4, Math.max(1, hair * 0.8), BRIGHT_RGB[tk], BRIGHT_RGB[tk + 1], BRIGHT_RGB[tk + 2], (0.12 + 0.3 * flash) * conf);
       }
     }
+
+    // ---- the move in force: its shape inside the ring ----
+    if (on.moveShape) this.drawMoveShape(sp, t);
 
     // ---- prediction orbit: satellites, ghost arcs, the second step ----
     if (on.predictions) this.drawPredictions(sp, t);
@@ -1289,7 +1328,8 @@ export class Compass {
         // satellite: hollow, no glow (predicted tier never blooms)
         sp.ring(cx + Math.cos(ang) * orbit, cy + Math.sin(ang) * orbit, (0.012 + 0.018 * p.p) * R, Math.max(1, R * 0.004), cr, cg, cb, op);
         if (p.root !== fromRoot) {
-          this.spiral(sp, from, R * NEEDLE_R, ang, orbit, (0.004 + 0.006 * p.p) * R, cr, cg, cb, op, phase, 1);
+          // a locked loop has earned its confidence: tighter dots
+          this.spiral(sp, from, R * NEEDLE_R, ang, orbit, (0.004 + 0.006 * p.p) * R, cr, cg, cb, op, phase, 1, p.loop ? 0.02 : 0.035);
         }
         // the chord after next, chained off the top prediction along the orbit
         if (i === 0 && p.then && p.then.root !== p.root) {
@@ -1317,13 +1357,13 @@ export class Compass {
    * round, easing outward. `phase` (0..1, or -1 for none) places a soft
    * brightness pulse along it; `upTo` draws only the first part (0..1).
    */
-  private spiral(sp: SpriteBatch, a0: number, r0: number, a1: number, r1: number, dotR: number, cr: number, cg: number, cb: number, op: number, phase: number, upTo: number): void {
+  private spiral(sp: SpriteBatch, a0: number, r0: number, a1: number, r1: number, dotR: number, cr: number, cg: number, cb: number, op: number, phase: number, upTo: number, spacing = 0.035): void {
     const { cx, cy, R } = this.L;
     let d = a1 - a0;
     d = Math.atan2(Math.sin(d), Math.cos(d));
     if (Math.abs(d) < 1e-3) return;
     const len = Math.abs(d) * (r0 + r1) * 0.5 + Math.abs(r1 - r0);
-    const n = Math.max(4, Math.min(96, Math.floor(len / (0.035 * R))));
+    const n = Math.max(4, Math.min(160, Math.floor(len / (spacing * R))));
     const rr = Math.max(1, dotR);
     for (let k = 1; k < n; k++) {
       const u = k / n;
@@ -1520,14 +1560,91 @@ export class Compass {
 
   private drawBadge(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     if (!this.badge) return;
-    ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = `600 ${Math.max(12, this.L.R * 0.058)}px ${MONO_FONT}`;
-    ctx.fillStyle = cssOklch(this.badgeRoot, 0.9, 0.1, 1);
+    const size = Math.max(12, this.L.R * 0.058);
+    ctx.font = `600 ${size}px ${MONO_FONT}`;
     ctx.letterSpacing = '3px';
-    ctx.fillText(this.badge.toUpperCase(), w / 2, h / 2);
+    const main = this.badge.toUpperCase();
+    const mw = ctx.measureText(main).width;
+    const rest = this.badgeRest ? `  ·  ${this.badgeRest}` : '';
+    ctx.font = `500 ${size * 0.8}px ${MONO_FONT}`;
+    ctx.letterSpacing = '1px';
+    const rw = rest ? ctx.measureText(rest).width : 0;
+    let x = w / 2 - (mw + rw) / 2;
+    // a dark pill under it, so the pitch names it crosses on the ring don't tangle with it
+    const padX = size * 0.8;
+    const ph = size * 1.7;
+    ctx.fillStyle = 'rgba(16,17,22,0.82)';
+    ctx.beginPath();
+    ctx.roundRect(x - padX, h / 2 - ph / 2, mw + rw + 2 * padX, ph, ph / 2);
+    ctx.fill();
+    ctx.textAlign = 'left';
+    ctx.font = `600 ${size}px ${MONO_FONT}`;
+    ctx.letterSpacing = '3px';
+    ctx.fillStyle = cssOklch(this.badgeRoot, 0.9, 0.1, 1);
+    ctx.fillText(main, x, h / 2);
+    x += mw;
+    if (rest) {
+      ctx.font = `500 ${size * 0.8}px ${MONO_FONT}`;
+      ctx.letterSpacing = '1px';
+      ctx.fillStyle = 'rgba(200,206,225,0.75)';
+      ctx.fillText(rest, x, h / 2);
+    }
     ctx.letterSpacing = '0px';
   }
+
+  /**
+   * The move in force as a shape inside the ring: each step's root on the circle
+   * of fifths, joined in order. What has sounded is a faint solid line, the next
+   * step dotted, the rest a whisper. ii–V–I is a short two-step hook, a tritone
+   * sub cuts across, I–V–vi–IV is a small zig-zag. A finished move fades out.
+   */
+  private drawMoveShape(sp: SpriteBatch, t: number): void {
+    const m = this.shape;
+    if (!m || m.path.length < 2) return;
+    const age = t - this.shapeT;
+    const fade = m.state === 'done' ? clamp01(1 - (age - 1.2) / 0.8) : 1;
+    if (fade <= 0) return;
+    const { cx, cy, R } = this.L;
+    const r = R * 0.86;
+    const pt = (pc: number): [number, number] => [cx + Math.cos(angOf(pc)) * r, cy + Math.sin(angOf(pc)) * r];
+    const n = m.path.length;
+    const segs = m.loop ? n : n - 1;
+    const th = Math.max(1, R * 0.0045);
+    const col = [0.72, 0.78, 0.95];
+    for (let i = 0; i < segs; i++) {
+      const a = m.path[i], b = m.path[(i + 1) % n];
+      if (a === b) continue;
+      const [x0, y0] = pt(a);
+      const [x1, y1] = pt(b);
+      // Bowed toward the center, so the move reads apart from the chord's straight-edged shape:
+      // neighbours on the circle make a shallow hook, a tritone sub a deep swoop across.
+      const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+      const qx = mx + (cx - mx) * 0.55, qy = my + (cy - my) * 0.55;
+      // steps behind the newest chord have sounded (in a loop, the whole lap has once it ran)
+      const played = m.loop ? m.laps >= 1 || i < m.at : i < m.at;
+      const next = i === m.at && (m.loop || m.at < n - 1);
+      const len = Math.hypot(x1 - x0, y1 - y0) * 1.15;
+      const k = Math.max(3, Math.floor(len / (R * (played ? 0.012 : next ? 0.03 : 0.05))));
+      for (let j = 1; j < k; j++) {
+        const u = j / k, v = 1 - u;
+        const x = v * v * x0 + 2 * v * u * qx + u * u * x1;
+        const y = v * v * y0 + 2 * v * u * qy + u * u * y1;
+        if (played) sp.disc(x, y, th * 0.7, col[0], col[1], col[2], 0.28 * fade);
+        else sp.disc(x, y, th * (next ? 1.1 : 0.8), col[0], col[1], col[2], (next ? 0.55 : 0.15) * fade);
+      }
+    }
+    // the step you're on
+    const [hx, hy] = pt(m.path[m.at]);
+    sp.ring(hx, hy, R * 0.022, th, col[0], col[1], col[2], 0.5 * fade);
+  }
+}
+
+/** 1st, 2nd, 3rd, 4th ... */
+function ordinal(n: number): string {
+  const t = n % 100;
+  if (t >= 11 && t <= 13) return `${n}th`;
+  return `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`;
 }
 
 /** Ripple strength by the function of the chord we landed on: the tonic gets the biggest. */

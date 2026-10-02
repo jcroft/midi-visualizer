@@ -13,6 +13,7 @@ import { defaultLayers } from './render/layers';
 import { FrameStats, LatencyProbe } from './bench/stats';
 import { Hud } from './bench/hud';
 import { buildChrome } from './ui/chrome';
+import { MovesRail, StyleLens } from './ui/moves';
 
 async function boot(): Promise<void> {
   const canvas = document.getElementById('stage') as HTMLCanvasElement;
@@ -31,9 +32,13 @@ async function boot(): Promise<void> {
   const viz = await createVisualizer(canvas);
   const worker = new Worker(new URL('../worker/theory.worker.ts', import.meta.url), { type: 'module' });
   const post = (m: ToWorker) => worker.postMessage(m);
+  const lens = new StyleLens((style) => post({ type: 'lean', style }));
+  const rail = new MovesRail();
   worker.onmessage = (e: MessageEvent<Analysis>) => {
     viz.setAnalysis(e.data);
     recorder.mark(e.data);
+    lens.update(e.data);
+    rail.update(e.data);
   };
 
   const hud = new Hud(document.getElementById('hud') as HTMLElement, { stats, probe, backend: viz.backend, midi });
@@ -73,9 +78,11 @@ async function boot(): Promise<void> {
     /* storage unavailable or corrupt: all on */
   }
   viz.setLayers(layers);
+  lens.setOn(layers.styleLens);
   const setLayer = (id: LayerId, on: boolean) => {
     layers[id] = on;
     viz.setLayers(layers);
+    lens.setOn(layers.styleLens);
     try {
       localStorage.setItem(LAYERS_KEY, JSON.stringify(layers));
     } catch {
@@ -97,6 +104,10 @@ async function boot(): Promise<void> {
     setLayer,
     panic: () => bus.emit({ type: 'panic', t: performance.now(), recvT: performance.now(), src: 'ui' }),
     toggleHud: () => hud.toggle(),
+    toggleMoves: () => {
+      rail.toggle();
+      return rail.isOpen;
+    },
   });
 
   const resize = () => viz.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio);

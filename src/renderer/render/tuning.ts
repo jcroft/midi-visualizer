@@ -78,10 +78,15 @@ export const BAND_ALPHA = 0.28;
 /** River view: compass radius = min(region width * this, height * COMPASS_R_H). */
 export const COMPASS_R_W = 0.27;
 export const COMPASS_R_H = 0.27;
-/** Compass-only view (default): radius = min(width * this, height * COMPASS_ONLY_R_H), center at height * CY. */
-export const COMPASS_ONLY_R_W = 0.24;
-export const COMPASS_ONLY_R_H = 0.29;
-export const COMPASS_ONLY_CY = 0.5;
+/**
+ * Compass-only view (default): the lead sheet takes the bottom SHEET_FRAC of the
+ * height and the compass the rest (about 75%). Radius = min(width * R_W, region
+ * height * R_H), centered at region height * CY above the sheet.
+ */
+export const SHEET_FRAC = 0.25;
+export const COMPASS_ONLY_R_W = 0.22;
+export const COMPASS_ONLY_R_H = 0.37;
+export const COMPASS_ONLY_CY = 0.45;
 /** Radius stack, as multiples of R: needle track, key arc, prediction orbit, prediction labels. */
 export const NEEDLE_R = 1.06;
 export const KEY_ARC_R = 1.14;
@@ -132,8 +137,8 @@ export const COMET_FADE = 0.3;
 /** Landing badge ("ii–V–I"): hold, then fade. */
 export const BADGE_HOLD = 1.4;
 export const BADGE_FADE = 0.5;
-/** Lead-sheet strip (compass view): scroll speed (R per second), edge fade curve, entries kept. */
-export const HISTORY_SPEED_R = 0.16;
+/** Lead-sheet strip (compass view): scroll speed (chord-name heights per second), edge fade curve, entries kept. */
+export const HISTORY_SPEED = 1.5;
 export const HISTORY_FADE_POW = 1.3;
 export const HISTORY_MAX = 32;
 

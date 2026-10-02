@@ -36,6 +36,11 @@ ctx.onmessage = (e: MessageEvent<ToWorker>) => {
     tick = null;
     return;
   }
+  if (m.type === 'lean') {
+    analyzer.lean(m.style);
+    if (lastSnap) run({ ...lastSnap, t: lastSnap.t + (performance.now() - lastRecv), pedalRecatch: false });
+    return;
+  }
   if (m.type !== 'snapshot') return;
   lastSnap = m;
   lastRecv = performance.now();

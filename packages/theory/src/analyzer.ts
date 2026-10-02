@@ -18,6 +18,9 @@ import {
 import { KeyTracker, diatonic, roman } from './key';
 import { mod12, keyLabel, parentMajor, rotMask, spell, type KeyLike, type Mode } from './pitch';
 import { type ChordEvent, fitsVamp, landingFor, parentKey, predict } from './predict';
+import { type LibContext, MoveTracker } from './tracker';
+import type { LoopLock, MoveMark } from '../../../src/shared/analysis';
+import type { Style } from './moves';
 
 // ---- tuning ---------------------------------------------------------------
 const ARM_MS = 250; // a trigger (3+ onsets / new bass / pedal re-catch) arms a change for this long
@@ -36,6 +39,10 @@ const MODAL_MS = 4000;
 const MODAL_SHIFT_MS = 8000; // a chord inside a vamp becomes the new modal center only after this long
 const CONF_K = 1.4;
 const YOUNG_MS = 150;
+/** Chord events remembered for the rules and the move library (long enough for a 4-chord loop twice, and then some). */
+const HISTORY_LEN = 16;
+/** Reading bonus for a chord the move library expects next, per unit of match strength. */
+const MOVE_HINT = 0.5;
 
 interface Reading {
   root: number;
@@ -57,6 +64,8 @@ interface LocalKey extends KeyLike {
 export interface Analyzer {
   update(snapshot: PianoSnapshot): Analysis | null;
   reset(): void;
+  /** Lean the move library toward a style family (null = let the music decide). */
+  lean(style: string | null): void;
   /**
    * True while a candidate label is waiting out its hysteresis hold. The host
    * should call update() again (same snapshot, later t) if no new snapshot
@@ -107,6 +116,21 @@ class AnalyzerImpl implements Analyzer {
   private lastReading: Reading | null = null;
   private lastEventBass = -1;
   private reread: Reread | null = null;
+  private readonly moves = new MoveTracker();
+  private lib: LibContext | null = null;
+  private seq = 0;
+  private marks: MoveMark[] | null = null;
+  private loop: LoopLock | null = null;
+
+  lean(style: string | null): void {
+    this.moves.lean = (style as Style) ?? null;
+    if (this.lastEvent && this.cur && this.cur.qi >= 0) {
+      const frame = this.modal ?? this.contextKey();
+      this.lib = this.moves.lib(frame, true);
+      this.predictions = predict(this.lastEvent, frame, this.history, 0, this.lib);
+    }
+    this.last = null;
+  }
 
   reset(): void {
     this.pool.fill(0);
@@ -136,6 +160,11 @@ class AnalyzerImpl implements Analyzer {
     this.lastReading = null;
     this.lastEventBass = -1;
     this.reread = null;
+    this.moves.reset();
+    this.lib = null;
+    this.seq = 0;
+    this.marks = null;
+    this.loop = null;
   }
 
   wantsTick(): boolean {
@@ -334,6 +363,7 @@ class AnalyzerImpl implements Analyzer {
             } else if (this.lastEvent) {
               this.lastEvent = { root: bestReading.root, q: bestReading.q };
               this.history[this.history.length - 1] = this.lastEvent;
+              this.moves.replaceLast(this.lastEvent);
             }
             this.curName = this.nameOf(bestReading, this.contextKey());
           }
@@ -380,6 +410,12 @@ class AnalyzerImpl implements Analyzer {
       const prev = lastEv && c.root === lastEv.root ? this.prevEvent : lastEv;
       // (a refinement keeps a little of what justified the current chord, not all of it)
       if (prev && (prev !== lastEv || allowMove || !cur)) bonus += transition(prev, c.root, q) * (prev === lastEv ? 1 : 0.6);
+      // The move in progress helps read an ambiguous voicing: a chord it expects next gets a nudge.
+      if (this.lib && lastEv && c.root !== lastEv.root && (allowMove || !cur)) {
+        let w = 0;
+        for (const lc of this.lib.cands) if (lc.root === c.root && familyOf(lc.q) === familyOf(q)) w = Math.max(w, lc.w);
+        bonus += MOVE_HINT * w;
+      }
       if (key) {
         const kk: KeyLike = key.mode === 'dorian' || key.mode === 'mixolydian' ? { tonic: parentMajor(key), mode: 'major' } : key;
         if (diatonic(c.root, q, kk)) bonus += 0.25;
@@ -453,7 +489,7 @@ class AnalyzerImpl implements Analyzer {
     this.lastReading = r;
     this.lastEventBass = this.lastBassNote;
     this.history.push(ev);
-    if (this.history.length > 6) this.history.shift();
+    if (this.history.length > HISTORY_LEN) this.history.shift();
     if (r.qi >= 0) this.gkey.addChord(ev.root, TEMPLATES[r.qi].guides, t);
     this.updateLocalKey(prev, ev, t);
     // a confirmed global modulation overrides an older local reading
@@ -469,7 +505,18 @@ class AnalyzerImpl implements Analyzer {
     const keyNow = this.local && this.local.t === t ? this.local : null;
     this.reread = prev ? this.pivotOf(prev, rr, keyBefore, keyNow) : null;
     this.landing = prev && this.predictions.length ? landingFor(this.predictions, prev, ev, frameBefore, this.history) : null;
-    this.predictions = r.qi >= 0 ? predict(ev, frame, this.history) : [];
+    // The move library: brackets, loop lock, a named landing, and its say in the predictions.
+    this.seq++;
+    const mv = this.moves.onChord(ev, this.seq, frame);
+    this.marks = mv.marks;
+    this.loop = mv.loop;
+    if (mv.landing && prev) {
+      const l = mv.landing;
+      this.landing ??= { from: prev.root, hit: -1, exact: false, label: null, fn: null };
+      this.landing.move = { id: l.move.id, name: l.name, style: l.style, count: l.count, laps: l.laps, loop: l.move.kind === 'loop', home: (l.tonic + l.home) % 12, rot: l.home };
+    }
+    this.lib = r.qi >= 0 ? this.moves.lib(frame) : null;
+    this.predictions = r.qi >= 0 ? predict(ev, frame, this.history, 0, this.lib) : [];
     this.predFrame = this.modal ? frameId(this.modal) : '';
   }
 
@@ -526,6 +573,7 @@ class AnalyzerImpl implements Analyzer {
     this.lastEvent = next;
     this.lastReading = nr;
     this.history[this.history.length - 1] = next;
+    this.moves.replaceLast(next);
     return { was, name: this.nameOf(nr, key), why };
   }
 
@@ -619,7 +667,9 @@ class AnalyzerImpl implements Analyzer {
     // A vamp just became modal: refigure the predictions in its frame, so the edge agrees with the center.
     const frameNow = this.modal ? frameId(this.modal) : '';
     if (frameNow !== this.predFrame && this.lastEvent && this.cur && this.cur.qi >= 0) {
-      this.predictions = predict(this.lastEvent, this.modal ?? this.contextKey(), this.history);
+      const frame = this.modal ?? this.contextKey();
+      this.lib = this.moves.lib(frame, true);
+      this.predictions = predict(this.lastEvent, frame, this.history, 0, this.lib);
       this.predFrame = frameNow;
     }
     let chord: ChordReading | null = null;
@@ -678,6 +728,10 @@ class AnalyzerImpl implements Analyzer {
       landing: changed ? this.landing : null,
       reread: changed ? this.reread : null,
       changed,
+      seq: this.seq,
+      moves: changed ? this.marks : null,
+      loop: this.loop,
+      style: this.moves.styleReading(),
     };
     this.last = a;
     return a;

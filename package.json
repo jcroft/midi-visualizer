@@ -10,7 +10,8 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "learn": "vite-node -c vitest.config.ts scripts/learn-moves.ts --"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

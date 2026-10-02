@@ -6,6 +6,7 @@ import {
   COMPASS_ONLY_CY,
   COMPASS_ONLY_R_H,
   COMPASS_ONLY_R_W,
+  SHEET_FRAC,
   COMPASS_R_H,
   COMPASS_R_W,
   KEY_COUNT,
@@ -35,6 +36,8 @@ export class Layout {
   cx = 0;
   cy = 0;
   R = 100;
+  /** Height of the lead-sheet band along the bottom (compass view; 0 in the river view). */
+  sheetH = 0;
 
   // Shader mirrors (seconds and px).
   readonly uNow = uniform(0);
@@ -57,10 +60,13 @@ export class Layout {
     this.step = (h - 2 * m) / KEY_COUNT;
     this.scale = Math.max(0.5, h / 900);
     if (this.view === 'compass') {
+      this.sheetH = Math.round(h * SHEET_FRAC);
+      const region = h - this.sheetH;
       this.cx = w * 0.5;
-      this.cy = h * COMPASS_ONLY_CY;
-      this.R = Math.max(40, Math.min(w * COMPASS_ONLY_R_W, h * COMPASS_ONLY_R_H));
+      this.cy = this.sheetH + region * COMPASS_ONLY_CY;
+      this.R = Math.max(40, Math.min(w * COMPASS_ONLY_R_W, region * COMPASS_ONLY_R_H));
     } else {
+      this.sheetH = 0;
       const left = this.nowX + 24;
       const cw = w - left;
       this.cx = left + cw * 0.5;

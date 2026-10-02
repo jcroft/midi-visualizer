@@ -102,8 +102,9 @@ describe('golden progressions', () => {
     expect(ii.predictions.length).toBeLessThanOrEqual(3);
     expect(ii.predictions[0]).toMatchObject({ name: 'G7', why: 'ii–V pull' });
     const v = steps[1].last!;
-    expect(v.predictions[0]).toMatchObject({ name: 'CΔ7', why: 'V–I' });
-    expect(v.predictions.some((p) => p.why === 'tritone sub')).toBe(true);
+    // the library names the move the I would complete
+    expect(v.predictions[0]).toMatchObject({ name: 'CΔ7', why: 'completes ii–V–I', move: { id: 'jazz.ii-V-I', completes: true } });
+    // (the tritone sub of the V is offered as a reharm, not predicted: see reharm.ts)
     for (const p of v.predictions) expect(p.why.length).toBeGreaterThan(0);
   });
 
