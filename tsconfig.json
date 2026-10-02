@@ -15,5 +15,5 @@
     "baseUrl": ".",
     "paths": { "@shared/*": ["src/shared/*"], "@theory/*": ["packages/theory/src/*"] }
   },
-  "include": ["src", "packages", "electron.vite.config.ts", "vitest.config.ts"]
+  "include": ["src", "packages", "scripts", "electron.vite.config.ts", "vitest.config.ts"]
 }

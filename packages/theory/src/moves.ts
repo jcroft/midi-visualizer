@@ -20,6 +20,8 @@
 // A loop keeps predicting its next chord and matches from any starting chord.
 // A cadence predicts its arrival, then lets go.
 
+import { MINE_SPECS } from './mine';
+
 export type Style = 'jazz' | 'pop' | 'rock' | 'gospel' | 'blues' | 'folk' | 'latin' | 'film' | 'modal' | 'classical' | 'mine';
 
 export const STYLES: readonly Style[] = ['jazz', 'pop', 'rock', 'gospel', 'blues', 'folk', 'latin', 'film', 'modal', 'classical'];
@@ -304,8 +306,8 @@ export const LIBRARY: Move[] = [
   mv('classical.picardy', 'iv V7 I', { name: 'Picardy third', kind: 'cadence', styles: ['classical'], tier: 3 }),
 ];
 
-/** Moves the player named themselves (see scripts/learn-moves.ts); they join the library as "mine". */
-export const MINE: Move[] = [];
+/** Moves the player named themselves (see scripts/learn-moves.ts and mine.ts); they join the library as "mine". */
+export const MINE: Move[] = MINE_SPECS.map(([roman, name, kind], i) => mv(`mine.${i + 1}`, roman, { name, kind, styles: ['mine'] }));
 
 export const ALL_MOVES: Move[] = [...LIBRARY, ...MINE];
 
